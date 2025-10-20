@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-50 text-gray-900;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  
+  input,
+  textarea,
+  [contenteditable="true"],
+  .select-text {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-track {
+    @apply bg-gray-100;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 rounded-full;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-400;
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  @keyframes fade-out-slide-up {
+    0% {
+      opacity: 1;
+      transform: translateX(0);
+      background-color: #fee2e2;
+    }
+    50% {
+      opacity: 0.5;
+      transform: translateX(100px);
+      background-color: #fca5a5;
+    }
+    100% {
+      opacity: 0;
+      transform: translateX(200px);
+      background-color: #ef4444;
+    }
+  }
+
+  .animate-fade-out-slide-up {
+    animation: fade-out-slide-up 2000ms linear forwards !important;
+    will-change: transform, opacity;
+  }
+}
+

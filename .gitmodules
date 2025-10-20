@@ -1,0 +1,6 @@
+[submodule "go-service/vendors/go-ios"]
+	path = go-service/vendors/go-ios
+	url = git@github.com:ipaget/go-ios.git
+[submodule "go-service/vendors/ipatool"]
+	path = go-service/vendors/ipatool
+	url = git@github.com:ipaget/ipatool.git

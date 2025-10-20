@@ -1,0 +1,66 @@
+# For reference only
+ref
+
+# Dependencies
+node_modules/
+go-service/vendor/
+
+# Build outputs
+dist/
+dist-ssr/
+src-tauri/target/
+src-tauri/binaries/
+go-service/tmp/
+
+# Go build artifacts
+go-service/*.exe
+go-service/*.so
+go-service/*.dylib
+go-service/main
+
+# IDE
+.vscode/
+!.vscode/terminals.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Config (contains sensitive data)
+*.json.bak
+.ipaget/
+
+# Test coverage
+coverage/
+*.cover
+*.coverage
+
+# Tauri
+src-tauri/gen/
+src-tauri/WixTools/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Lock files (keep them for reproducible builds)
+# package-lock.json (if using npm)
+# pnpm-lock.yaml (keep for pnpm)
+# go.sum (keep for go)

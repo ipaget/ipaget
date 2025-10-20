@@ -1,0 +1,10 @@
+{
+  "name": "ipaget-go-service",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "go run github.com/air-verse/air@latest",
+    "build": "go build -o ./tmp/main main.go"
+  }
+}
+

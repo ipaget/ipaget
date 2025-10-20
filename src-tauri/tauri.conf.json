@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "iPAGet",
+  "version": "0.1.0",
+  "identifier": "com.ipaget.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build && cd go-service && powershell -File build.ps1",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["ipa"],
+        "name": "iOS App Package",
+        "description": "iOS Application Archive",
+        "role": "Editor",
+        "mimeType": "application/octet-stream"
+      }
+    ]
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": ".*"
+    }
+  }
+}
