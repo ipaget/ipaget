@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -30,6 +31,7 @@ import (
 	"ipaget-service/internal/ipa"
 	"ipaget-service/internal/logger"
 	"ipaget-service/internal/models"
+	plistutil "ipaget-service/internal/plist"
 	"ipaget-service/internal/sign"
 	"ipaget-service/internal/store"
 	wsHub "ipaget-service/internal/websocket"
@@ -46,6 +48,7 @@ var (
 	appService    *app.Service
 	storeService  *store.Service
 	ipaService    *ipa.Service
+	plistService  *plistutil.Service
 	certService   *certifi.Service
 	hub           *wsHub.Hub
 	upgrader      = websocket.Upgrader{
@@ -173,6 +176,7 @@ func main() {
 
 	storeService = store.NewService(serviceConfigDir, onGSAAuthenticated)
 	ipaService = ipa.NewService()
+	plistService = plistutil.NewService()
 	hub = wsHub.NewHub()
 
 	// Generate a 4-digit random instance ID at startup
@@ -268,6 +272,12 @@ func main() {
 	r.POST("/ipa/extract-file", handleExtractFile)
 	r.POST("/ipa/extract-files", handleExtractFiles)
 	r.POST("/ipa/sign", handleSignIPA)
+
+	// Standalone property list editor
+	r.POST("/plist/parse", handleParsePlist)
+	r.POST("/plist/write", handleWritePlist)
+	r.POST("/plist/render-xml", handleRenderPlistXML)
+	r.POST("/plist/parse-xml", handleParsePlistXML)
 
 	// Certificate management
 	r.POST("/certs/import-p12", handleImportP12Cert)
@@ -2878,6 +2888,121 @@ func handlePairDevice(c *gin.Context) {
 	logger.Info().Str("udid", udid).Msg("Device paired successfully")
 	c.JSON(http.StatusOK, models.SuccessResponse{
 		Message: "Device paired successfully",
+	})
+}
+
+func handleParsePlist(c *gin.Context) {
+	var req struct {
+		Path       string `json:"path"`
+		DataBase64 string `json:"data_base64"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "invalid request body"})
+		return
+	}
+
+	path := strings.TrimSpace(req.Path)
+	dataBase64 := strings.TrimSpace(req.DataBase64)
+	if path == "" && dataBase64 == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "path or data_base64 is required"})
+		return
+	}
+
+	var (
+		result *plistutil.ParseResult
+		err    error
+	)
+	if path != "" {
+		result, err = plistService.ParseFile(path)
+	} else {
+		raw, decodeErr := base64.StdEncoding.DecodeString(dataBase64)
+		if decodeErr != nil {
+			c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "invalid data_base64"})
+			return
+		}
+		result, err = plistService.ParseBytes(raw)
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse{
+		Message: "Plist parsed successfully",
+		Data:    result,
+	})
+}
+
+func handleWritePlist(c *gin.Context) {
+	var req struct {
+		Path   string      `json:"path" binding:"required"`
+		Root   interface{} `json:"root" binding:"required"`
+		Format string      `json:"format"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "path and root are required"})
+		return
+	}
+
+	if err := plistService.WriteFile(plistutil.WriteRequest{
+		Path:   strings.TrimSpace(req.Path),
+		Root:   req.Root,
+		Format: strings.TrimSpace(req.Format),
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse{Message: "Plist written successfully"})
+}
+
+func handleRenderPlistXML(c *gin.Context) {
+	var req struct {
+		Root interface{} `json:"root" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "root is required"})
+		return
+	}
+
+	xmlPreview, err := plistService.RenderXML(req.Root)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse{
+		Message: "Plist XML rendered successfully",
+		Data: map[string]interface{}{
+			"xml_preview": xmlPreview,
+		},
+	})
+}
+
+func handleParsePlistXML(c *gin.Context) {
+	var req struct {
+		XML string `json:"xml" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "xml is required"})
+		return
+	}
+
+	xmlText := strings.TrimSpace(req.XML)
+	if xmlText == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "xml is required"})
+		return
+	}
+
+	result, err := plistService.ParseBytes([]byte(xmlText))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse{
+		Message: "Plist XML parsed successfully",
+		Data:    result,
 	})
 }
 
