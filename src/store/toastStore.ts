@@ -1,4 +1,4 @@
-import { create } from "zustand";
+import { createWithEqualityFn } from "zustand/traditional";
 
 interface ToastState {
   message: string | null;
@@ -15,7 +15,7 @@ interface ToastState {
   clearToast: () => void;
 }
 
-export const useToastStore = create<ToastState>((set) => ({
+export const useToastStore = createWithEqualityFn<ToastState>((set) => ({
   message: null,
   type: "info",
   showProgress: false,

@@ -1,4 +1,4 @@
-import { create } from "zustand";
+import { createWithEqualityFn } from "zustand/traditional";
 import type { DeviceInfo } from "../lib/goService";
 
 export type { DeviceInfo };
@@ -66,7 +66,7 @@ interface DeviceState {
   clearAllDeviceAppsCache: () => void;
 }
 
-export const useDeviceStore = create<DeviceState>((set, get) => ({
+export const useDeviceStore = createWithEqualityFn<DeviceState>((set, get) => ({
   // Device Management
   connectedDevices: [],
   selectedDevice: null,
@@ -84,7 +84,34 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   deviceAppsCache: new Map(),
   
   // Actions
-  setConnectedDevices: (devices) => set({ connectedDevices: devices }),
+  setConnectedDevices: (devices) => set((state) => {
+    // If no device is currently selected and we have devices, auto-select the first one
+    let newSelectedDevice = state.selectedDevice;
+    
+    if (!state.selectedDevice && devices.length > 0) {
+      newSelectedDevice = devices[0];
+      console.log(`[DeviceStore] Auto-selecting first device: ${devices[0].name} (${devices[0].udid})`);
+    } else if (state.selectedDevice) {
+      // Check if the selected device is still connected
+      const stillConnected = devices.find(d => d.udid === state.selectedDevice!.udid);
+      if (!stillConnected) {
+        // Selected device disconnected, clear selection or auto-select first device
+        newSelectedDevice = devices.length > 0 ? devices[0] : null;
+        if (newSelectedDevice) {
+          console.log(`[DeviceStore] Previous device disconnected, auto-selecting: ${newSelectedDevice.name}`);
+        } else {
+          console.log(`[DeviceStore] Previous device disconnected, no devices available`);
+        }
+      }
+    }
+    
+    console.log(`[DeviceStore] setConnectedDevices: ${devices.length} devices, selected: ${newSelectedDevice?.name || 'none'}`);
+    
+    return { 
+      connectedDevices: devices,
+      selectedDevice: newSelectedDevice
+    };
+  }),
   setSelectedDevice: (device) => set({ selectedDevice: device }),
   setIsRefreshing: (isRefreshing) => set({ isRefreshing }),
   setRefreshCompleted: (completed) => set({ refreshCompleted: completed }),

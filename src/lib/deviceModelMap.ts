@@ -7,6 +7,11 @@ import i18n from '../i18n';
 
 export const deviceModelMapEn: Record<string, string> = {
   // iPhone
+  // Simulator
+  "i386": "iPhone Simulator",
+  "x86_64": "iPhone Simulator",
+  "arm64": "iPhone Simulator",
+
   "iPhone1,1": "iPhone",
   "iPhone1,2": "iPhone 3G",
   "iPhone2,1": "iPhone 3GS",
@@ -64,6 +69,11 @@ export const deviceModelMapEn: Record<string, string> = {
   "iPhone17,2": "iPhone 16 Pro Max",
   "iPhone17,3": "iPhone 16",
   "iPhone17,4": "iPhone 16 Plus",
+  "iPhone17,5": "iPhone 16e",
+  "iPhone18,1": "iPhone 17 Pro",
+  "iPhone18,2": "iPhone 17 Pro Max",
+  "iPhone18,3": "iPhone 17",
+  "iPhone18,4": "iPhone Air",
 
   // iPad
   "iPad1,1": "iPad (1st generation)",
@@ -234,6 +244,11 @@ export const deviceModelMapEn: Record<string, string> = {
 
 export const deviceModelMapZh: Record<string, string> = {
   // iPhone
+  // Simulator
+  "i386": "iPhone 模拟器",
+  "x86_64": "iPhone 模拟器",
+  "arm64": "iPhone 模拟器",
+
   "iPhone1,1": "iPhone",
   "iPhone1,2": "iPhone 3G",
   "iPhone2,1": "iPhone 3GS",
@@ -291,6 +306,11 @@ export const deviceModelMapZh: Record<string, string> = {
   "iPhone17,2": "iPhone 16 Pro Max",
   "iPhone17,3": "iPhone 16",
   "iPhone17,4": "iPhone 16 Plus",
+  "iPhone17,5": "iPhone 16e",
+  "iPhone18,1": "iPhone 17 Pro",
+  "iPhone18,2": "iPhone 17 Pro Max",
+  "iPhone18,3": "iPhone 17",
+  "iPhone18,4": "iPhone Air",
 
   // iPad
   "iPad1,1": "iPad (第一代)",

@@ -1,8 +1,35 @@
-import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles.css";
 import "./i18n";
+
+// Update loader status
+export function updateLoaderStatus(status: string) {
+  const statusElement = document.getElementById('loader-status');
+  if (statusElement) {
+    statusElement.textContent = status;
+  }
+}
+
+// Hide loader
+export function hideLoader() {
+  const loader = document.getElementById('app-loader');
+  const titlebar = document.getElementById('loader-titlebar');
+  
+  if (loader) {
+    loader.classList.add('hidden');
+    setTimeout(() => {
+      loader.remove();
+    }, 300);
+  }
+  
+  if (titlebar) {
+    titlebar.style.opacity = '0';
+    setTimeout(() => {
+      titlebar.remove();
+    }, 300);
+  }
+}
 
 // Disable default context menu unless Shift is pressed
 document.addEventListener('contextmenu', (e) => {
@@ -103,8 +130,6 @@ document.addEventListener('keydown', (e) => {
 });
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
+  <App />
 );
 

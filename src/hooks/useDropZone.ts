@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { isTauriRuntime } from "../lib/runtime";
 
 interface DropZoneOptions {
   onDrop: (paths: string[]) => void;
@@ -11,7 +12,7 @@ export const useDropZone = ({ onDrop, enabled = true }: DropZoneOptions) => {
   const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !isTauriRuntime()) return;
 
     const unlistenHover = listen<string[]>("tauri://file-drop-hover", () => {
       setIsDragging(true);
