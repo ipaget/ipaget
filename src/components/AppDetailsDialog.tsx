@@ -89,7 +89,7 @@ export default function AppDetailsDialog({ app, appIcon, onClose }: AppDetailsDi
 
   return (
     <Transition appear show={!!app} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={onClose}>
+      <Dialog as="div" className="relative z-40" onClose={onClose}>
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-300"
@@ -314,11 +314,19 @@ export default function AppDetailsDialog({ app, appIcon, onClose }: AppDetailsDi
                       </div>
                     )}
 
-                    {detailsTab === 'raw' && displayedAppDetails.raw_data && (
-                      <RawDataViewer
-                        data={displayedAppDetails.raw_data}
-                        excludeKeys={['Entitlements']}
-                      />
+                    {detailsTab === 'raw' && (
+                      displayedAppDetails.raw_data ? (
+                        <RawDataViewer
+                          data={displayedAppDetails.raw_data}
+                          excludeKeys={['Entitlements']}
+                        />
+                      ) : (
+                        <div className="p-6 overflow-y-auto scrollbar-thin">
+                          <div className="text-center py-12 text-gray-500">
+                            {t("devices.noRawData")}
+                          </div>
+                        </div>
+                      )
                     )}
 
                     {detailsTab === 'entitlements' && (

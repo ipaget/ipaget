@@ -1,13 +1,11 @@
 import { useState } from "react";
-import { Key, Shield, Globe, Bell } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import CopyButton from "./CopyButton";
-import HighlightCard from "./HighlightCard";
 import EntitlementGroup from "./EntitlementGroup";
 import {
   parseEntitlementsXML,
   getEntitlementsArray,
-  type EntitlementsInfo,
   type ParsedEntitlement,
 } from "../lib/entitlementsParser";
 
@@ -119,47 +117,10 @@ export default function EntitlementsView({ entitlementsXml }: EntitlementsViewPr
   };
 
   const { categorized, uncategorized } = groupedEntitlements();
-  const info: EntitlementsInfo = parsedEntitlements as EntitlementsInfo;
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4">
-        {info.keychainAccessGroups && info.keychainAccessGroups.length > 0 && (
-          <HighlightCard
-            title={t('devices.entitlement.keychainAccessGroups')}
-            icon={<Key className="text-blue-600" size={20} />}
-            items={info.keychainAccessGroups}
-            colorClass="from-blue-50 to-blue-100 border-blue-200"
-          />
-        )}
-
-        {info.applicationGroups && info.applicationGroups.length > 0 && (
-          <HighlightCard
-            title={t('devices.entitlement.appGroups')}
-            icon={<Shield className="text-purple-600" size={20} />}
-            items={info.applicationGroups}
-            colorClass="from-purple-50 to-purple-100 border-purple-200"
-          />
-        )}
-
-        {info.associatedDomains && info.associatedDomains.length > 0 && (
-          <HighlightCard
-            title={t('devices.entitlement.associatedDomains')}
-            icon={<Globe className="text-green-600" size={20} />}
-            items={info.associatedDomains}
-            colorClass="from-green-50 to-green-100 border-green-200"
-          />
-        )}
-
-        {info.apsEnvironment && (
-          <HighlightCard
-            title={t('devices.entitlement.pushNotifications')}
-            icon={<Bell className="text-orange-600" size={20} />}
-            items={[info.apsEnvironment]}
-            colorClass="from-orange-50 to-orange-100 border-orange-200"
-          />
-        )}
-      </div>
+      {/* Removed top highlight cards for entitlements like App Groups */}
 
       <div className="space-y-3">
         {Object.entries(categorized).map(([categoryKey, items]) => {
@@ -172,7 +133,7 @@ export default function EntitlementsView({ entitlementsXml }: EntitlementsViewPr
               items={items.map(item => ({
                 key: item.key,
                 value: item.value,
-                type: item.type,
+                type: Array.isArray(item.value) ? 'array' : typeof item.value,
               }))}
               defaultExpanded={items.length > 0}
             />
@@ -186,7 +147,7 @@ export default function EntitlementsView({ entitlementsXml }: EntitlementsViewPr
             items={uncategorized.map(item => ({
               key: item.key,
               value: item.value,
-              type: item.type,
+              type: Array.isArray(item.value) ? 'array' : typeof item.value,
             }))}
             defaultExpanded={true}
           />
@@ -196,9 +157,10 @@ export default function EntitlementsView({ entitlementsXml }: EntitlementsViewPr
       <div className="border-t border-gray-200 pt-6">
         <button
           onClick={() => setShowRawXml(!showRawXml)}
-          className="text-sm font-semibold text-gray-700 hover:text-primary-600 transition-colors mb-3"
+          className="text-sm font-semibold text-gray-700 hover:text-primary-600 transition-colors mb-3 inline-flex items-center space-x-2"
         >
-          {showRawXml ? t('devices.entitlement.hideRawXml') : t('devices.entitlement.showRawXml')}
+          <ChevronRight size={14} className={`transition-transform duration-200 ${showRawXml ? 'rotate-90' : 'rotate-0'}`} />
+          <span>{showRawXml ? t('devices.entitlement.hideRawXml') : t('devices.entitlement.showRawXml')}</span>
         </button>
 
         {showRawXml && (

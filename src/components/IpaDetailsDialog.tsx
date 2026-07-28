@@ -1,110 +1,95 @@
 import { useState, useEffect, Fragment } from "react";
-import { X, Loader2, FileText, Shield, Package } from "lucide-react";
+import { X, Loader2, FileText, Shield } from "lucide-react";
 import { Dialog, Transition, Tab } from "@headlessui/react";
 import { useTranslation } from "react-i18next";
 import EntitlementsView from "./EntitlementsView";
-import { goServiceClient } from "../lib/goService";
-
-interface IpaDetails {
-  entitlements_xml: string;
-  files: FileItem[];
-  resources: ResourceItem[];
-}
-
-interface FileItem {
-  path: string;
-  size: number;
-  is_directory: boolean;
-}
-
-interface ResourceItem {
-  name: string;
-  type: string;
-  size: number;
-}
+import FileTree from "./FileTree";
+import PluginsView from "./PluginsView";
+import PropertiesView from "./PropertiesView";
+import { goServiceClient, IPADetails } from "../lib/goService";
 
 interface IpaDetailsDialogProps {
   filePath: string | null;
   onClose: () => void;
-}
-
-function classNames(...classes: string[]) {
-  return classes.filter(Boolean).join(' ');
+  onModified?: (modified: boolean) => void;
+  view?: "details" | "plugins" | "properties";
 }
 
 export default function IpaDetailsDialog({
   filePath,
   onClose,
+  onModified,
+  view = "details",
 }: IpaDetailsDialogProps) {
   const { t } = useTranslation();
-  const [details, setDetails] = useState<IpaDetails | null>(null);
+  const [displayFilePath, setDisplayFilePath] = useState<string | null>(null);
+  const [details, setDetails] = useState<IPADetails | null>(null);
+  const [originalDetails, setOriginalDetails] = useState<IPADetails | null>(null);
+  const [isModified, setIsModified] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [progress, setProgress] = useState(0);
-  const [progressMessage, setProgressMessage] = useState("");
 
   useEffect(() => {
-    if (!filePath) {
-      setDetails(null);
-      setError(null);
-      setProgress(0);
-      setProgressMessage("");
+    if (filePath) {
+      setDisplayFilePath(filePath);
+    }
+  }, [filePath]);
+
+  useEffect(() => {
+    if (!displayFilePath) {
       return;
     }
 
     const loadDetails = async () => {
       setIsLoading(true);
       setError(null);
-      setProgress(0);
-      setProgressMessage(t("ipaDetails.loading"));
+      setDetails(null);
+      setOriginalDetails(null);
+      setIsModified(false);
 
       try {
-        const { task_id } = await goServiceClient.getIpaDetails(filePath);
-
-        const handleProgress = (event: any) => {
-          if (event.type === "task_progress" && 
-              event.task_type === "ipa_details" && 
-              event.task_id === task_id) {
-            setProgress(event.progress);
-            setProgressMessage(event.message);
-            
-            if (event.status === "completed" && event.data) {
-              setDetails(event.data as IpaDetails);
-              setIsLoading(false);
-            } else if (event.status === "error") {
-              setError(event.message || "Failed to load IPA details");
-              setIsLoading(false);
-            }
-          }
-        };
-
-        goServiceClient.connectWebSocket(handleProgress);
-        
-        return () => {
-          goServiceClient.disconnectWebSocket(handleProgress);
-        };
+        console.log("IPA Details - Loading details for:", displayFilePath);
+        const data = await goServiceClient.getIpaDetails(displayFilePath);
+        console.log("IPA Details - Loaded successfully");
+        setDetails(data);
+        setOriginalDetails(JSON.parse(JSON.stringify(data)));
       } catch (err: any) {
         console.error("Failed to load IPA details:", err);
         setError(err.message || "Failed to load IPA details");
+      } finally {
         setIsLoading(false);
       }
     };
 
     loadDetails();
-  }, [filePath, t]);
+  }, [displayFilePath]);
 
-  const formatSize = (bytes: number): string => {
-    if (bytes < 1024) return `${bytes} B`;
-    const kb = bytes / 1024;
-    if (kb < 1024) return `${kb.toFixed(2)} KB`;
-    const mb = kb / 1024;
-    if (mb < 1024) return `${mb.toFixed(2)} MB`;
-    return `${(mb / 1024).toFixed(2)} GB`;
+  const handlePluginsModified = () => {
+    if (!details || !originalDetails) return;
+    
+    const modified = JSON.stringify(details) !== JSON.stringify(originalDetails);
+    setIsModified(modified);
+    if (onModified) {
+      onModified(modified);
+    }
   };
 
+
   return (
-    <Transition appear show={!!filePath} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={onClose}>
+    <Transition
+      appear
+      show={!!filePath}
+      as={Fragment}
+      afterLeave={() => {
+        setDisplayFilePath(null);
+        setDetails(null);
+        setOriginalDetails(null);
+        setIsModified(false);
+        setIsLoading(false);
+        setError(null);
+      }}
+    >
+      <Dialog as="div" className="relative z-[80]" onClose={onClose}>
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-300"
@@ -126,7 +111,7 @@ export default function IpaDetailsDialog({
               enterTo="opacity-100 scale-100"
               leave="ease-in duration-200"
               leaveFrom="opacity-100 scale-100"
-              leaveTo="opacity-0 scale-95"
+              leaveTo="opacity-0 scale-100"
             >
               <Dialog.Panel className="w-full max-w-2xl max-h-[75vh] transform overflow-hidden rounded-2xl bg-white text-left align-middle shadow-xl transition-all flex flex-col">
                 <div className="flex items-center justify-between p-6 pb-4 border-b border-gray-200">
@@ -144,163 +129,102 @@ export default function IpaDetailsDialog({
                   </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-6">
+                <div className="flex-1 px-4 pb-4 pt-2">
                 {isLoading ? (
                   <div className="flex flex-col items-center justify-center py-12 space-y-4">
                     <Loader2 className="animate-spin text-primary-600" size={40} />
-                    <div className="w-full max-w-md">
-                      <div className="w-full bg-gray-200 rounded-full h-2.5">
-                        <div
-                          className="bg-primary-600 h-2.5 rounded-full transition-all duration-300"
-                          style={{ width: `${progress}%` }}
-                        ></div>
-                      </div>
-                      <p className="text-sm text-gray-600 text-center mt-2">
-                        {progressMessage}
-                      </p>
-                    </div>
+                    <p className="text-sm text-gray-600">{t("ipaDetails.loading")}</p>
                   </div>
                 ) : error ? (
                   <div className="py-6">
                     <p className="text-red-600 text-center">{error}</p>
                   </div>
                 ) : details ? (
-                  <Tab.Group>
-                    <Tab.List className="flex space-x-1 rounded-xl bg-primary-100 p-1 mb-4">
-                      <Tab
-                        className={({ selected }) =>
-                          classNames(
-                            'w-full rounded-lg py-2.5 text-sm font-medium leading-5',
-                            'ring-white ring-opacity-60 ring-offset-2 ring-offset-primary-400 focus:outline-none focus:ring-2',
-                            selected
-                              ? 'bg-white text-primary-700 shadow'
-                              : 'text-primary-600 hover:bg-white/[0.12] hover:text-primary-700'
-                          )
-                        }
-                      >
-                        <div className="flex items-center justify-center space-x-2">
-                          <Shield size={18} />
-                          <span>{t("ipaDetails.tabs.entitlements")}</span>
-                        </div>
-                      </Tab>
-                      <Tab
-                        className={({ selected }) =>
-                          classNames(
-                            'w-full rounded-lg py-2.5 text-sm font-medium leading-5',
-                            'ring-white ring-opacity-60 ring-offset-2 ring-offset-primary-400 focus:outline-none focus:ring-2',
-                            selected
-                              ? 'bg-white text-primary-700 shadow'
-                              : 'text-primary-600 hover:bg-white/[0.12] hover:text-primary-700'
-                          )
-                        }
-                      >
-                        <div className="flex items-center justify-center space-x-2">
-                          <FileText size={18} />
-                          <span>{t("ipaDetails.tabs.files")}</span>
-                        </div>
-                      </Tab>
-                      <Tab
-                        className={({ selected }) =>
-                          classNames(
-                            'w-full rounded-lg py-2.5 text-sm font-medium leading-5',
-                            'ring-white ring-opacity-60 ring-offset-2 ring-offset-primary-400 focus:outline-none focus:ring-2',
-                            selected
-                              ? 'bg-white text-primary-700 shadow'
-                              : 'text-primary-600 hover:bg-white/[0.12] hover:text-primary-700'
-                          )
-                        }
-                      >
-                        <div className="flex items-center justify-center space-x-2">
-                          <Package size={18} />
-                          <span>{t("ipaDetails.tabs.resources")}</span>
-                        </div>
-                      </Tab>
-                    </Tab.List>
-                    <Tab.Panels className="mt-2">
-                      <Tab.Panel className="rounded-xl bg-white p-3">
-                        {details.entitlements_xml ? (
-                          <EntitlementsView entitlementsXml={details.entitlements_xml} />
-                        ) : (
-                          <p className="text-gray-500 text-center py-8">
-                            {t("ipaDetails.noEntitlements")}
-                          </p>
-                        )}
-                      </Tab.Panel>
-                      <Tab.Panel className="rounded-xl bg-white p-3">
-                        {details.files && details.files.length > 0 ? (
-                          <div className="space-y-1">
-                            <div className="sticky top-0 bg-white border-b border-gray-200 pb-2 mb-2">
-                              <p className="text-sm text-gray-600">
-                                {t("ipaDetails.totalFiles", { count: details.files.length })}
-                              </p>
+                  <>
+                    {isModified && (
+                      <div className="mb-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+                        <p className="text-sm text-red-700 font-medium">
+                          {t("ipaDetails.modified.warning")}
+                        </p>
+                        <p className="text-xs text-red-600 mt-1">
+                          {t("ipaDetails.modified.allowInstall")}
+                        </p>
+                      </div>
+                    )}
+                    {view === "details" && (
+                      <Tab.Group>
+                        <Tab.List className="flex space-x-1 rounded-xl bg-gray-100 p-1 mb-2">
+                          <Tab
+                            className={({ selected }) =>
+                              [
+                                "w-full rounded-lg py-2 text-sm font-medium leading-5",
+                                "ring-white ring-opacity-60 focus:outline-none focus:ring-2",
+                                selected
+                                  ? "bg-white text-gray-900 shadow"
+                                  : "text-gray-600 hover:bg-white/[0.5] hover:text-gray-900",
+                              ].join(" ")
+                            }
+                          >
+                            <div className="flex items-center justify-center space-x-2">
+                              <Shield size={16} />
+                              <span>{t("ipaDetails.tabs.entitlements")}</span>
                             </div>
-                            {details.files.map((file, idx) => (
-                              <div
-                                key={idx}
-                                className="flex items-center justify-between px-3 py-2 hover:bg-gray-50 rounded-lg"
-                              >
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-sm font-mono text-gray-900 truncate">
-                                    {file.path}
-                                  </p>
-                                </div>
-                                <div className="flex items-center space-x-4 ml-4">
-                                  {file.is_directory ? (
-                                    <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
-                                      {t("ipaDetails.directory")}
-                                    </span>
-                                  ) : (
-                                    <span className="text-xs text-gray-600">
-                                      {formatSize(file.size)}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-gray-500 text-center py-8">
-                            {t("ipaDetails.noFiles")}
-                          </p>
-                        )}
-                      </Tab.Panel>
-                      <Tab.Panel className="rounded-xl bg-white p-3">
-                        {details.resources && details.resources.length > 0 ? (
-                          <div className="space-y-1">
-                            <div className="sticky top-0 bg-white border-b border-gray-200 pb-2 mb-2">
-                              <p className="text-sm text-gray-600">
-                                {t("ipaDetails.totalResources", { count: details.resources.length })}
-                              </p>
+                          </Tab>
+                          <Tab
+                            className={({ selected }) =>
+                              [
+                                "w-full rounded-lg py-2 text-sm font-medium leading-5",
+                                "ring-white ring-opacity-60 focus:outline-none focus:ring-2",
+                                selected
+                                  ? "bg-white text-gray-900 shadow"
+                                  : "text-gray-600 hover:bg-white/[0.5] hover:text-gray-900",
+                              ].join(" ")
+                            }
+                          >
+                            <div className="flex items-center justify-center space-x-2">
+                              <FileText size={16} />
+                              <span>{t("ipaDetails.tabs.files")}</span>
                             </div>
-                            {details.resources.map((resource, idx) => (
-                              <div
-                                key={idx}
-                                className="flex items-center justify-between px-3 py-2 hover:bg-gray-50 rounded-lg"
-                              >
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-sm font-medium text-gray-900 truncate">
-                                    {resource.name}
-                                  </p>
-                                  <p className="text-xs text-gray-500">
-                                    {resource.type}
-                                  </p>
-                                </div>
-                                <div className="ml-4">
-                                  <span className="text-xs text-gray-600">
-                                    {formatSize(resource.size)}
-                                  </span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-gray-500 text-center py-8">
-                            {t("ipaDetails.noResources")}
-                          </p>
-                        )}
-                      </Tab.Panel>
-                    </Tab.Panels>
-                  </Tab.Group>
+                          </Tab>
+                        </Tab.List>
+                        <Tab.Panels className="h-[450px]">
+                          <Tab.Panel className="rounded-xl bg-white p-3 h-full overflow-y-auto scrollbar-thin">
+                            {details.entitlements_xml ? (
+                              <EntitlementsView entitlementsXml={details.entitlements_xml} />
+                            ) : (
+                              <p className="text-gray-500 text-center py-4 text-sm">
+                                {t("ipaDetails.noEntitlements")}
+                              </p>
+                            )}
+                          </Tab.Panel>
+                          <Tab.Panel className="rounded-xl bg-white p-3 h-full overflow-y-auto scrollbar-thin">
+                            {details.files && details.files.length > 0 && displayFilePath ? (
+                              <FileTree files={details.files} ipaPath={displayFilePath} />
+                            ) : (
+                              <p className="text-gray-500 text-center py-4 text-sm">
+                                {t("ipaDetails.noFiles")}
+                              </p>
+                            )}
+                          </Tab.Panel>
+                        </Tab.Panels>
+                      </Tab.Group>
+                    )}
+                    {view === "plugins" && (
+                      <div className="rounded-xl bg-white pt-1 px-2 pb-2 h-[450px]">
+                        <PluginsView
+                          dylibs={details.dylibs || []}
+                          frameworks={details.frameworks || []}
+                          plugins={details.plugins || []}
+                          onModified={handlePluginsModified}
+                        />
+                      </div>
+                    )}
+                    {view === "properties" && (
+                      <div className="rounded-xl bg-white p-3 h-[450px] overflow-y-auto scrollbar-thin">
+                        <PropertiesView properties={details.properties || {}} />
+                      </div>
+                    )}
+                  </>
                 ) : null}
                 </div>
               </Dialog.Panel>

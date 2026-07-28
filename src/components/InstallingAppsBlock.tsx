@@ -1,18 +1,35 @@
 import { useEffect, useState } from "react";
-import { X, Check, Loader2, Package } from "lucide-react";
+import { X, Check, Package } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useTaskStore, Task } from "../store/taskStore";
-import { useTask } from "../hooks/useTask";
+import { useInstallStore } from "../store/installStore";
+import type { Task } from "../store/taskStore";
 
 interface InstallingAppsBlockProps {
-  udid: string;
+  udid?: string;
+  title?: string;
 }
 
-export default function InstallingAppsBlock({ udid }: InstallingAppsBlockProps) {
+export default function InstallingAppsBlock({ udid, title }: InstallingAppsBlockProps) {
   const { t } = useTranslation();
-  const { tasks: installTasks } = useTask("install", udid);
-  const { removeTask } = useTaskStore();
+  const installTasksRaw = useInstallStore((s) => s.tasks);
+  const removeTask = useInstallStore((s) => s.removeTask);
+  const installTasks = installTasksRaw.filter(t => t.type === "install" && (!udid || t.udid === udid)).map(t => ({
+    id: t.id,
+    type: "install",
+    status: t.status === "completed" ? "completed" : t.status === "failed" ? "error" : "progress",
+    progress: t.progress,
+    message: t.message || "",
+    data: {
+      udid: t.udid,
+      bundle_id: t.bundleId,
+      file_path: t.filePath,
+      version: t.version,
+    },
+    createdAt: t.startTime,
+    updatedAt: t.endTime || Date.now(),
+  } as Task));
   const [dismissingTasks, setDismissingTasks] = useState<Set<string>>(new Set());
+  const [isVisible, setIsVisible] = useState(false);
   
   // Auto-dismiss completed tasks after 10 seconds
   useEffect(() => {
@@ -38,20 +55,31 @@ export default function InstallingAppsBlock({ udid }: InstallingAppsBlockProps) 
   
   const visibleTasks = installTasks.filter(task => !dismissingTasks.has(task.id));
   
-  if (visibleTasks.length === 0) {
+  // Handle visibility animation
+  useEffect(() => {
+    if (visibleTasks.length > 0) {
+      setIsVisible(true);
+    } else if (isVisible) {
+      const timer = setTimeout(() => setIsVisible(false), 300);
+      return () => clearTimeout(timer);
+    }
+  }, [visibleTasks.length, isVisible]);
+  
+  if (!isVisible && visibleTasks.length === 0) {
     return null;
   }
   
+  const displayTitle = title || t("devices.installingApps");
+  
   return (
     <div 
-      className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden mt-6 transition-all duration-300 ease-in-out"
-      style={{
-        animation: visibleTasks.length === 0 ? 'slideDown 300ms ease-in-out' : 'none'
-      }}
+      className={`bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden mt-6 transition-all duration-300 ease-in-out ${
+        visibleTasks.length === 0 ? 'animate-slideOut' : 'animate-slideIn'
+      }`}
     >
       <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
         <h3 className="text-sm font-semibold text-gray-700">
-          {t("devices.installingApps")} ({visibleTasks.length})
+          {displayTitle} ({visibleTasks.length})
         </h3>
       </div>
       
@@ -67,15 +95,38 @@ export default function InstallingAppsBlock({ udid }: InstallingAppsBlockProps) 
       </div>
       
       <style>{`
-        @keyframes slideDown {
+        @keyframes slideIn {
           from {
-            max-height: 500px;
+            max-height: 0;
+            opacity: 0;
+            transform: translateY(-10px);
+          }
+          to {
+            max-height: 1000px;
             opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        
+        @keyframes slideOut {
+          from {
+            max-height: 1000px;
+            opacity: 1;
+            transform: translateY(0);
           }
           to {
             max-height: 0;
             opacity: 0;
+            transform: translateY(-10px);
           }
+        }
+        
+        .animate-slideIn {
+          animation: slideIn 300ms ease-out forwards;
+        }
+        
+        .animate-slideOut {
+          animation: slideOut 300ms ease-in forwards;
         }
       `}</style>
     </div>
@@ -95,11 +146,11 @@ function InstallTaskRow({ task, onDismiss, isDismissing }: InstallTaskRowProps) 
   const isRunning = task.status === "started" || task.status === "progress";
   
   const getAppName = () => {
-    if (task.file_path) {
-      const fileName = task.file_path.split(/[/\\]/).pop() || "";
+    if (task.data?.file_path) {
+      const fileName = task.data.file_path.split(/[/\\]/).pop() || "";
       return fileName.replace(/\.(ipa|tipa)$/i, "");
     }
-    return task.bundle_id || t("common.unknownApp");
+    return task.data?.bundle_id || t("common.unknownApp");
   };
   
   const getVersion = () => {
@@ -129,7 +180,7 @@ function InstallTaskRow({ task, onDismiss, isDismissing }: InstallTaskRowProps) 
           {getAppName()}
         </p>
         <p className="text-xs text-gray-500 truncate">
-          {task.bundle_id || "-"}
+          {task.data?.bundle_id || "-"}
         </p>
       </div>
       

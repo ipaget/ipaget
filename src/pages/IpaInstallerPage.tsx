@@ -1,12 +1,15 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Package, Loader2, Smartphone, Check, X, ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { stat } from "@tauri-apps/plugin-fs";
-import { parseIPA, goServiceClient } from "../lib/goService";
+import { parseIPA, goServiceClient, TaskProgressEvent } from "../lib/goService";
+import { useInstallStore } from "../store/installStore";
 import DetailRow from "../components/DetailRow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { motion, AnimatePresence } from "framer-motion";
+import SignatureStatusBadge from "../components/SignatureStatusBadge";
 
 interface IpaInfo {
   name: string;
@@ -16,13 +19,20 @@ interface IpaInfo {
   filePath: string;
   fileSize: number;
   minimumOSVersion?: string;
+  certificateStatus?: string;
+  signerName?: string;
+  signerIdentity?: string;
+  organization?: string;
+  teamId?: string;
+  purchaserEmail?: string;
+  isEncrypted?: boolean;
 }
 
 interface Device {
   udid: string;
   name: string;
   model: string;
-  ios_version: string;
+  version: string;
   battery_level?: number;
   connection_type?: string;
 }
@@ -40,9 +50,12 @@ export default function IpaInstallerPage() {
   const [installStatus, setInstallStatus] = useState<InstallStatus>("idle");
   const [installProgress, setInstallProgress] = useState(0);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [isVisible, setIsVisible] = useState(true);
+  const currentTaskIdRef = useRef<string | null>(null);
+  const { startInstall } = useInstallStore();
 
   useEffect(() => {
-    let deviceCheckInterval: NodeJS.Timeout | null = null;
+    let deviceCheckInterval: number | null = null;
     let unlisten: (() => void) | null = null;
 
     const init = async () => {
@@ -75,6 +88,30 @@ export default function IpaInstallerPage() {
     };
   }, [devices.length]);
 
+  useEffect(() => {
+    const handleTaskProgress = (event: TaskProgressEvent) => {
+      if (event.task_type === "install" && event.task_id === currentTaskIdRef.current) {
+        if (event.status === "progress" || event.status === "started") {
+          setInstallProgress(event.progress);
+        } else if (event.status === "completed") {
+          setInstallProgress(100);
+          setInstallStatus("success");
+          currentTaskIdRef.current = null;
+        } else if (event.status === "error") {
+          setInstallError(event.message || "Installation failed");
+          setInstallStatus("error");
+          currentTaskIdRef.current = null;
+        }
+      }
+    };
+
+    goServiceClient.connectWebSocket(handleTaskProgress as any);
+
+    return () => {
+      goServiceClient.disconnectWebSocket(handleTaskProgress as any);
+    };
+  }, []);
+
   const loadIpaInfo = async (filePath: string) => {
     setIsLoadingIpa(true);
     setIpaError(null);
@@ -91,6 +128,13 @@ export default function IpaInstallerPage() {
         filePath: filePath,
         fileSize: stats.size || 0,
         minimumOSVersion: parsedInfo.minimum_os_version,
+        certificateStatus: parsedInfo.certificate_status,
+        signerName: parsedInfo.signer_name,
+        signerIdentity: parsedInfo.signer_identity,
+        organization: parsedInfo.organization,
+        teamId: parsedInfo.team_id,
+        purchaserEmail: parsedInfo.purchaser_email,
+        isEncrypted: parsedInfo.is_encrypted,
       });
     } catch (err: any) {
       console.error("Failed to parse IPA:", err);
@@ -105,12 +149,20 @@ export default function IpaInstallerPage() {
     try {
       const deviceList = await goServiceClient.listDevices();
       setDevices(deviceList);
-      if (deviceList.length === 1) {
+      if (deviceList.length === 0) {
+        setSelectedDevice(null);
+      } else if (deviceList.length === 1) {
         setSelectedDevice(deviceList[0].udid);
+      } else if (selectedDevice) {
+        const stillConnected = deviceList.find(d => d.udid === selectedDevice);
+        if (!stillConnected) {
+          setSelectedDevice(null);
+        }
       }
     } catch (err) {
       console.error("Failed to load devices:", err);
       setDevices([]);
+      setSelectedDevice(null);
     } finally {
       setIsLoadingDevices(false);
     }
@@ -124,11 +176,16 @@ export default function IpaInstallerPage() {
     setInstallError(null);
 
     try {
-      await goServiceClient.installIPA(selectedDevice, ipaInfo.filePath, (progress) => {
-        setInstallProgress(progress);
-      });
-
-      setInstallStatus("success");
+      const taskId = await startInstall(
+        selectedDevice,
+        ipaInfo.filePath,
+        ipaInfo.bundleId,
+        ipaInfo.version,
+        ipaInfo.name,
+        null
+      );
+      currentTaskIdRef.current = taskId;
+      console.log("Install task started:", taskId);
     } catch (err: any) {
       console.error("Installation failed:", err);
       setInstallError(err.message || "Installation failed");
@@ -139,14 +196,17 @@ export default function IpaInstallerPage() {
   const handleOpenMainApp = async () => {
     try {
       await invoke("open_main_window");
-      const currentWindow = getCurrentWindow();
-      await currentWindow.close();
+      setIsVisible(false);
     } catch (err) {
       console.error("Failed to open main app:", err);
     }
   };
 
   const handleClose = async () => {
+    setIsVisible(false);
+  };
+
+  const closeWindow = async () => {
     const currentWindow = getCurrentWindow();
     await currentWindow.close();
   };
@@ -159,8 +219,10 @@ export default function IpaInstallerPage() {
     return `${mb.toFixed(2)} MB`;
   };
 
+  let content;
+
   if (isLoadingIpa) {
-    return (
+    content = (
       <div className="h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-white">
         <div className="text-center">
           <Loader2 className="animate-spin text-primary-600 mx-auto mb-4" size={48} />
@@ -168,10 +230,8 @@ export default function IpaInstallerPage() {
         </div>
       </div>
     );
-  }
-
-  if (ipaError) {
-    return (
+  } else if (ipaError) {
+    content = (
       <div className="h-screen flex items-center justify-center bg-gradient-to-br from-red-50 to-white">
         <div className="max-w-md mx-auto p-8 bg-white rounded-2xl shadow-lg">
           <div className="text-center">
@@ -192,18 +252,14 @@ export default function IpaInstallerPage() {
         </div>
       </div>
     );
-  }
-
-  if (!ipaInfo) {
-    return (
+  } else if (!ipaInfo) {
+    content = (
       <div className="h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-white">
         <p className="text-gray-600">{t("common.noData")}</p>
       </div>
     );
-  }
-
-  if (installStatus === "success") {
-    return (
+  } else if (installStatus === "success") {
+    content = (
       <div className="h-screen flex items-center justify-center bg-gradient-to-br from-green-50 to-white">
         <div className="max-w-md mx-auto p-8 bg-white rounded-2xl shadow-lg">
           <div className="text-center">
@@ -235,10 +291,8 @@ export default function IpaInstallerPage() {
         </div>
       </div>
     );
-  }
-
-  if (installStatus === "error") {
-    return (
+  } else if (installStatus === "error") {
+    content = (
       <div className="h-screen flex items-center justify-center bg-gradient-to-br from-red-50 to-white">
         <div className="max-w-md mx-auto p-8 bg-white rounded-2xl shadow-lg">
           <div className="text-center">
@@ -270,172 +324,191 @@ export default function IpaInstallerPage() {
         </div>
       </div>
     );
-  }
-
-  return (
-    <div className="h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-white p-6">
-      <div className="max-w-2xl w-full mx-auto p-8 bg-white rounded-2xl shadow-xl">
-        {/* IPA Info Section */}
-        <div className="flex flex-col items-center mb-8">
-          {ipaInfo.icon ? (
-            <img
-              src={`data:image/png;base64,${ipaInfo.icon}`}
-              alt={ipaInfo.name}
-              className="w-24 h-24 rounded-2xl shadow-lg mb-4"
-            />
-          ) : (
-            <div className="w-24 h-24 rounded-2xl shadow-lg mb-4 bg-gradient-to-br from-primary-400 to-primary-600 flex items-center justify-center">
-              <Package className="text-white" size={48} />
+  } else {
+    content = (
+      <div className="h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-white p-6">
+        <div className="max-w-2xl w-full mx-auto p-8 bg-white rounded-2xl shadow-xl">
+          {/* IPA Info Section */}
+          <div className="flex flex-col items-center mb-8">
+            {ipaInfo.icon ? (
+              <img
+                src={`data:image/png;base64,${ipaInfo.icon}`}
+                alt={ipaInfo.name}
+                className="w-24 h-24 rounded-2xl shadow-lg mb-4"
+              />
+            ) : (
+              <div className="w-24 h-24 rounded-2xl shadow-lg mb-4 bg-gradient-to-br from-primary-400 to-primary-600 flex items-center justify-center">
+                <Package className="text-white" size={48} />
+              </div>
+            )}
+            <h2 className="text-2xl font-semibold text-gray-900 mb-1">
+              {ipaInfo.name}
+            </h2>
+            <div className="flex items-center justify-center space-x-2 mt-2">
+              <SignatureStatusBadge info={ipaInfo} />
             </div>
-          )}
-          <h2 className="text-2xl font-semibold text-gray-900 mb-1">
-            {ipaInfo.name}
-          </h2>
-          <p className="text-gray-500">{t("installer.readyToInstall")}</p>
-        </div>
+            <p className="text-gray-500 mt-1">{t("installer.readyToInstall")}</p>
+          </div>
 
-        {/* IPA Details */}
-        <div className="space-y-1 mb-8 bg-gray-50 rounded-xl p-4">
-          <DetailRow
-            label={t("common.version")}
-            value={ipaInfo.version}
-            copyable={false}
-          />
-          <DetailRow
-            label={t("common.bundleId")}
-            value={ipaInfo.bundleId}
-            copyable={true}
-          />
-          <DetailRow
-            label={t("common.fileSize")}
-            value={formatSize(ipaInfo.fileSize)}
-            copyable={false}
-          />
-          {ipaInfo.minimumOSVersion && (
+          {/* IPA Details */}
+          <div className="space-y-1 mb-8 bg-gray-50 rounded-xl p-4">
             <DetailRow
-              label={t("common.minimumOS")}
-              value={ipaInfo.minimumOSVersion}
+              label={t("common.version")}
+              value={ipaInfo.version}
               copyable={false}
             />
-          )}
-        </div>
+            <DetailRow
+              label={t("common.bundleId")}
+              value={ipaInfo.bundleId}
+              copyable={true}
+            />
+            <DetailRow
+              label={t("common.fileSize")}
+              value={formatSize(ipaInfo.fileSize)}
+              copyable={false}
+            />
+            {ipaInfo.minimumOSVersion && (
+              <DetailRow
+                label={t("common.minimumOS")}
+                value={ipaInfo.minimumOSVersion}
+                copyable={false}
+              />
+            )}
+          </div>
 
-        {/* Device Selection */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">
-              {t("installer.selectDevice")}
-            </h3>
+          {/* Device Selection */}
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">
+                {t("installer.selectDevice")}
+              </h3>
+              <button
+                onClick={loadDevices}
+                disabled={isLoadingDevices}
+                className="text-primary-600 hover:text-primary-700 text-sm flex items-center space-x-1"
+              >
+                {isLoadingDevices ? (
+                  <Loader2 className="animate-spin" size={16} />
+                ) : (
+                  <span>{t("common.refresh")}</span>
+                )}
+              </button>
+            </div>
+
+            {devices.length === 0 ? (
+              <div className="text-center py-12 bg-gray-50 rounded-xl">
+                <Smartphone className="text-gray-400 mx-auto mb-3" size={48} />
+                <p className="text-gray-600 mb-1">{t("installer.noDevices")}</p>
+                <p className="text-gray-400 text-sm">{t("installer.waitingForDevice")}</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {devices.map((device) => (
+                  <button
+                    key={device.udid}
+                    onClick={() => setSelectedDevice(device.udid)}
+                    className={`w-full p-4 rounded-xl border-2 transition-all text-left ${
+                      selectedDevice === device.udid
+                        ? "border-primary-500 bg-primary-50"
+                        : "border-gray-200 hover:border-gray-300 bg-white"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-3">
+                        <div
+                          className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                            selectedDevice === device.udid
+                              ? "bg-primary-500"
+                              : "bg-gray-200"
+                          }`}
+                        >
+                          <Smartphone
+                            className={
+                              selectedDevice === device.udid
+                                ? "text-white"
+                                : "text-gray-600"
+                            }
+                            size={20}
+                          />
+                        </div>
+                        <div>
+                          <p className="font-medium text-gray-900">{device.name}</p>
+                          <p className="text-sm text-gray-500">
+                            {device.model} • iOS {device.version}
+                          </p>
+                        </div>
+                      </div>
+                      {selectedDevice === device.udid && (
+                        <Check className="text-primary-600" size={24} />
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Install Progress */}
+          {installStatus === "installing" && (
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-gray-600">{t("devices.installing")}</span>
+                <span className="text-sm font-medium text-primary-600">
+                  {installProgress}%
+                </span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div
+                  className="bg-primary-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${installProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Action Buttons */}
+          <div className="flex space-x-3">
             <button
-              onClick={loadDevices}
-              disabled={isLoadingDevices}
-              className="text-primary-600 hover:text-primary-700 text-sm flex items-center space-x-1"
+              onClick={handleClose}
+              disabled={installStatus === "installing"}
+              className="flex-1 px-6 py-3 bg-gray-100 text-gray-700 rounded-xl hover:bg-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isLoadingDevices ? (
-                <Loader2 className="animate-spin" size={16} />
+              {t("common.cancel")}
+            </button>
+            <button
+              onClick={handleInstall}
+              disabled={!selectedDevice || installStatus === "installing"}
+              className="flex-1 px-6 py-3 bg-primary-600 text-white rounded-xl hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+            >
+              {installStatus === "installing" ? (
+                <>
+                  <Loader2 className="animate-spin" size={20} />
+                  <span>{t("devices.installing")}</span>
+                </>
               ) : (
-                <span>{t("common.refresh")}</span>
+                <span>{t("devices.install")}</span>
               )}
             </button>
           </div>
-
-          {devices.length === 0 ? (
-            <div className="text-center py-12 bg-gray-50 rounded-xl">
-              <Smartphone className="text-gray-400 mx-auto mb-3" size={48} />
-              <p className="text-gray-600 mb-1">{t("installer.noDevices")}</p>
-              <p className="text-gray-400 text-sm">{t("installer.waitingForDevice")}</p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {devices.map((device) => (
-                <button
-                  key={device.udid}
-                  onClick={() => setSelectedDevice(device.udid)}
-                  className={`w-full p-4 rounded-xl border-2 transition-all text-left ${
-                    selectedDevice === device.udid
-                      ? "border-primary-500 bg-primary-50"
-                      : "border-gray-200 hover:border-gray-300 bg-white"
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                      <div
-                        className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                          selectedDevice === device.udid
-                            ? "bg-primary-500"
-                            : "bg-gray-200"
-                        }`}
-                      >
-                        <Smartphone
-                          className={
-                            selectedDevice === device.udid
-                              ? "text-white"
-                              : "text-gray-600"
-                          }
-                          size={20}
-                        />
-                      </div>
-                      <div>
-                        <p className="font-medium text-gray-900">{device.name}</p>
-                        <p className="text-sm text-gray-500">
-                          {device.model} • iOS {device.ios_version}
-                        </p>
-                      </div>
-                    </div>
-                    {selectedDevice === device.udid && (
-                      <Check className="text-primary-600" size={24} />
-                    )}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Install Progress */}
-        {installStatus === "installing" && (
-          <div className="mb-6">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-gray-600">{t("devices.installing")}</span>
-              <span className="text-sm font-medium text-primary-600">
-                {installProgress}%
-              </span>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-2">
-              <div
-                className="bg-primary-600 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${installProgress}%` }}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Action Buttons */}
-        <div className="flex space-x-3">
-          <button
-            onClick={handleClose}
-            disabled={installStatus === "installing"}
-            className="flex-1 px-6 py-3 bg-gray-100 text-gray-700 rounded-xl hover:bg-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {t("common.cancel")}
-          </button>
-          <button
-            onClick={handleInstall}
-            disabled={!selectedDevice || installStatus === "installing"}
-            className="flex-1 px-6 py-3 bg-primary-600 text-white rounded-xl hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
-          >
-            {installStatus === "installing" ? (
-              <>
-                <Loader2 className="animate-spin" size={20} />
-                <span>{t("devices.installing")}</span>
-              </>
-            ) : (
-              <span>{t("devices.install")}</span>
-            )}
-          </button>
         </div>
       </div>
-    </div>
+    );
+  }
+
+
+  return (
+    <AnimatePresence onExitComplete={closeWindow}>
+      {isVisible && (
+        <motion.div
+          initial={{ opacity: 1 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2, ease: "easeOut" }}
+        >
+          {content}
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 
