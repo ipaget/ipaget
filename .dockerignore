@@ -1,0 +1,15 @@
+node_modules
+dist
+.next
+.git
+*.log
+.env
+.env.local
+__pycache__
+*.pyc
+go-service/tmp
+go-service/.tmpmain*
+go-service/ipaget-service.exe
+go-service/signstoredipa.exe
+ref
+src-tauri

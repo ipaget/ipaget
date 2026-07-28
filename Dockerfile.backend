@@ -1,0 +1,13 @@
+FROM golang:1.24-bookworm
+
+RUN go install github.com/air-verse/air@v1.62.0
+
+WORKDIR /app/go-service
+
+COPY go-service .
+
+RUN go mod download
+
+EXPOSE 8765
+
+CMD ["air", "-c", ".air.toml"]
