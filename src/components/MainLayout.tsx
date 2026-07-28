@@ -1,6 +1,6 @@
 import { ReactNode, useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Search, Smartphone, Settings, LogIn, User, ChevronDown, Trash2, Plus, Apple, Check, Library, PenSquare, FileEdit } from "lucide-react";
+import { Search, Smartphone, Settings, LogIn, User, ChevronDown, Trash2, Plus, Apple, Check, Library, PenSquare, FileEdit, FileCode2 } from "lucide-react";
 import { useAccountStore, Account } from "../store/accountStore";
 import { useErrorStore } from "../store/errorStore";
 import { invoke } from "@tauri-apps/api/core";
@@ -157,6 +157,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { path: "/devices", icon: Smartphone, label: t('nav.devices') },
     { path: "/certificates", icon: PenSquare, label: t('nav.certificate') },
     { path: "/editor", icon: FileEdit, label: t('nav.editor') },
+    { path: "/plist", icon: FileCode2, label: t('nav.plist') },
     { path: "/settings", icon: Settings, label: t('nav.settings') },
   ];
 
@@ -347,4 +348,3 @@ export default function MainLayout({ children }: MainLayoutProps) {
     </div>
   );
 }
-

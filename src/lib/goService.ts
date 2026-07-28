@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./runtime";
+import type { PlistNode, PlistParseResult } from "./plistTypes";
 
 export class TokenExpiredError extends Error {
   constructor(message: string = "password token expired") {
@@ -1324,6 +1325,90 @@ export class GoServiceClient {
     
     const result = await response.json();
     return result.data.content;
+  }
+
+  async parsePlist(input: { path?: string; dataBase64?: string }): Promise<PlistParseResult> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/plist/parse`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        path: input.path,
+        data_base64: input.dataBase64,
+      }),
+    });
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to parse plist");
+      throw new Error("Unreachable");
+    }
+
+    const result = await response.json();
+    return result.data as PlistParseResult;
+  }
+
+  async writePlist(input: {
+    path: string;
+    root: PlistNode;
+    format?: "preserve" | "xml" | "binary" | string;
+  }): Promise<void> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/plist/write`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        path: input.path,
+        root: input.root,
+        format: input.format || "preserve",
+      }),
+    });
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to write plist");
+      throw new Error("Unreachable");
+    }
+  }
+
+  async renderPlistXML(root: PlistNode): Promise<string> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/plist/render-xml`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ root }),
+    });
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to render plist XML");
+      throw new Error("Unreachable");
+    }
+
+    const result = await response.json();
+    return String(result.data?.xml_preview || "");
+  }
+
+  async parsePlistXml(xml: string): Promise<PlistParseResult> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/plist/parse-xml`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ xml }),
+    });
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to parse plist XML");
+      throw new Error("Unreachable");
+    }
+
+    const result = await response.json();
+    return result.data as PlistParseResult;
   }
 
   async extractFilesFromIpa(ipaPath: string, filePaths: string[], outputDir: string): Promise<string[]> {

@@ -15,6 +15,8 @@ interface CustomSelectProps {
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+  /** Visual density for compact toolbars and table rows. */
+  size?: "default" | "sm";
 }
 
 interface MenuPosition {
@@ -32,6 +34,7 @@ export default function CustomSelect({
   placeholder = "Select...",
   disabled = false,
   className = "",
+  size = "default",
 }: CustomSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
@@ -40,6 +43,7 @@ export default function CustomSelect({
   const menuRef = useRef<HTMLDivElement>(null);
 
   const selectedOption = options.find((opt) => opt.value === value);
+  const isCompact = size === "sm";
 
   const updateMenuPosition = () => {
     const buttonElement = buttonRef.current;
@@ -138,8 +142,9 @@ export default function CustomSelect({
                     type="button"
                     onClick={() => handleSelect(option.value)}
                     className={`
-                      w-full px-4 py-2.5 flex items-center gap-3
+                      w-full flex items-center gap-3
                       transition-colors duration-150
+                      ${isCompact ? "px-3 py-2" : "px-4 py-2.5"}
                       ${
                         isSelected
                           ? "bg-primary-50 text-primary-700"
@@ -148,8 +153,12 @@ export default function CustomSelect({
                     `}
                   >
                     {option.icon && <span className="flex-shrink-0">{option.icon}</span>}
-                    <span className="flex-1 truncate text-left font-normal">{option.label}</span>
-                    {isSelected && <Check size={18} className="flex-shrink-0 text-primary-600" />}
+                    <span className={`flex-1 truncate text-left font-normal ${isCompact ? "text-xs" : "text-sm"}`}>
+                      {option.label}
+                    </span>
+                    {isSelected && (
+                      <Check size={isCompact ? 14 : 18} className="flex-shrink-0 text-primary-600" />
+                    )}
                   </button>
                 );
               })}
@@ -167,9 +176,10 @@ export default function CustomSelect({
         onClick={() => !disabled && setIsOpen(!isOpen)}
         disabled={disabled}
         className={`
-          w-full px-4 py-2.5 bg-white border rounded-lg
+          w-full bg-white border rounded-lg
           flex items-center justify-between gap-3
           transition-all duration-200
+          ${isCompact ? "h-8 px-2.5 py-0" : "px-4 py-2.5"}
           ${
             disabled
               ? "opacity-50 cursor-not-allowed bg-gray-50"
@@ -180,12 +190,12 @@ export default function CustomSelect({
       >
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {selectedOption?.icon && <span className="flex-shrink-0">{selectedOption.icon}</span>}
-          <span className="truncate font-medium text-gray-900">
+          <span className={`truncate text-gray-900 ${isCompact ? "text-xs font-normal" : "text-sm font-medium"}`}>
             {selectedOption?.label || placeholder}
           </span>
         </div>
         <ChevronDown
-          size={18}
+          size={isCompact ? 14 : 18}
           className={`flex-shrink-0 text-gray-500 transition-transform duration-200 ${
             isOpen ? "rotate-180" : ""
           }`}
