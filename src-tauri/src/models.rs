@@ -1,26 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct AppInfo {
-    pub bundle_id: String,
-    pub name: String,
-    pub version: String,
-    pub icon_url: Option<String>,
-    pub price: Option<f64>,
-    pub description: Option<String>,
-    pub rating: Option<f64>,
-    pub download_count: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct VersionInfo {
-    pub version: String,
-    pub release_date: String,
-    pub size: String,
-    pub notes: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct IpaFileInfo {
     pub name: String,
     pub path: String,
@@ -28,13 +8,7 @@ pub struct IpaFileInfo {
     pub bundle_id: String,
     pub version: String,
     pub download_date: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AccountInfo {
-    pub email: String,
-    pub country: String,
-    pub is_authenticated: bool,
+    pub source: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -45,8 +19,31 @@ pub struct SavedAccount {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppSettings {
+    pub language: String,
+    #[serde(default)]
+    pub anisette_url: String,
+    #[serde(default)]
+    pub proxy_url: String,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            language: "en".to_string(),
+            anisette_url: String::new(),
+            proxy_url: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     pub go_ios_path: Option<String>,
     pub download_dir: String,
     pub saved_accounts: Vec<SavedAccount>,
+    #[serde(default)]
+    pub settings: AppSettings,
+    #[serde(default)]
+    pub selected_account_email: Option<String>,
 }

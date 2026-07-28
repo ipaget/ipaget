@@ -25,10 +25,20 @@ pub fn save_app_config(
     let current_accounts =
         saved_accounts.unwrap_or_else(|| state.saved_accounts.lock().unwrap().clone());
 
+    let current_settings = state.settings.lock().unwrap().clone();
+
+    let selected_email = state
+        .selected_account_email
+        .lock()
+        .unwrap()
+        .clone();
+
     let config = AppConfig {
         go_ios_path: current_go_ios_path,
         download_dir: current_download_dir,
         saved_accounts: current_accounts,
+        settings: current_settings,
+        selected_account_email: selected_email,
     };
 
     let config_json = serde_json::to_string_pretty(&config)
@@ -59,5 +69,7 @@ pub fn load_app_config(config_file: &PathBuf) -> AppConfig {
         go_ios_path: None,
         download_dir: default_download_dir,
         saved_accounts: Vec::new(),
+        settings: Default::default(),
+        selected_account_email: None,
     }
 }

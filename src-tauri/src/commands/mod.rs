@@ -1,13 +1,13 @@
 pub mod apps;
-pub mod auth;
+pub mod file_system;
 pub mod go_service;
-pub mod ipatool;
+pub mod settings;
 pub mod window;
 
 pub use apps::*;
-pub use auth::*;
+pub use file_system::*;
 pub use go_service::*;
-pub use ipatool::*;
+pub use settings::*;
 pub use window::*;
 
 #[tauri::command]
