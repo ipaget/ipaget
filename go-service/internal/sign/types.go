@@ -3,15 +3,18 @@ package sign
 import "time"
 
 type ProvisioningProfile struct {
-	Filename     string
-	Name         string
-	Created      time.Time
-	Expires      time.Time
-	AppID        string
-	TeamID       string
-	Entitlements map[string]interface{}
-	Path         string
-	rawData      []byte
+	Filename              string
+	Name                  string
+	Created               time.Time
+	Expires               time.Time
+	AppID                 string
+	TeamID                string
+	Entitlements          map[string]interface{}
+	DeveloperCertificates [][]byte
+	Path                  string
+	rawData               []byte
+	ProvisionsAllDevices  bool
+	ProvisionedDevices    []string
 }
 
 type SignerOptions struct {
@@ -23,6 +26,9 @@ type SignerOptions struct {
 	NewBundleID      string
 	NewBundleName    string
 	NewBundleVersion string
+	NewBuildVersion  string
+	MinimumOSVersion string
+	Appearance       string
 	EntitlementsFile string
 	Entitlements     map[string]interface{}
 	DylibFiles       []string
@@ -34,6 +40,48 @@ type SignerOptions struct {
 	PreserveMetadata bool
 	Debug            bool
 	DebugFolder      string
+
+	// Info.plist capability overrides (applied during signing)
+	FileSharing                  bool
+	ITunesFileSharing            bool
+	RemoveURLScheme              bool
+	RemoveProvisioning           bool
+	StatusBarHidden              bool
+	ViewControllerBasedStatusBar bool
+	PrerenderedIcon              bool
+	RequiresPersistentWiFi       bool
+	ExitsOnSuspend              bool
+	AllowsArbitraryLoads        bool
+	NoEncryptionDecl            bool
+	// Orientations: any true => override UISupportedInterfaceOrientations
+	OrientationPortrait           bool
+	OrientationLandscapeLeft      bool
+	OrientationLandscapeRight     bool
+	OrientationPortraitUpsideDown bool
+	// Background modes: any true => override UIBackgroundModes
+	BgAudio    bool
+	BgLocation bool
+	BgFetch    bool
+	BgVoip     bool
+
+	// Advanced
+	RequiredDeviceCapabilities             string
+	RemoveSupportedDevices                 bool
+	BundleLocalizations                    string
+	DevelopmentRegion                      string
+	ApplicationCategoryType                string
+	SupportsMultipleScenes                *bool // nil = keep
+	CustomURLScheme                        string
+	RemoveDocumentTypes                    bool
+	RemoveExportedTypeDeclarations         bool
+	RemoveApplicationQueriesSchemes        bool
+	PrivacyOverrides                       map[string]string
+	RemoveLaunchScreen                     bool
+	RemoveWatchApp                         bool
+	RemovePlugIns                          bool
+
+	// App icon replacement
+	IconFile string // path to a PNG/JPG to use as replacement app icon
 }
 
 type Certificate struct {

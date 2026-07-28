@@ -84,6 +84,9 @@ func extractZipWithProgress(src string, dest string, progressCallback func(progr
 		return nil
 	}
 
+	var lastReportedProgress float64 = -1
+	const minProgressDelta = 0.5 // Only report if progress changes by at least 0.5%
+
 	for i, f := range r.File {
 		err := extractAndWriteFile(f)
 		if err != nil {
@@ -92,7 +95,11 @@ func extractZipWithProgress(src string, dest string, progressCallback func(progr
 
 		if progressCallback != nil {
 			progress := float64(i+1) / float64(totalFiles) * 100
-			progressCallback(progress)
+			// Only call callback if progress changed significantly or this is the last file
+			if progress-lastReportedProgress >= minProgressDelta || i == totalFiles-1 {
+				progressCallback(progress)
+				lastReportedProgress = progress
+			}
 		}
 	}
 

@@ -129,7 +129,7 @@ func InstallIPA(ipaPath string) error {
 
 	// For now, just return a message
 	// Full implementation would call: ideviceinstaller -i <ipa_path>
-	return fmt.Errorf("install功能需要安装 libimobiledevice 工具。请使用: ideviceinstaller -i %s", ipaPath)
+	return fmt.Errorf("Installation requires libimobiledevice tools. Please use: ideviceinstaller -i %s", ipaPath)
 }
 
 func extractSignatureData(data []byte) ([]byte, error) {

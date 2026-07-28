@@ -3,7 +3,9 @@ package logger
 import (
 	"fmt"
 	"io"
+	"ipaget-service/internal/logbuffer"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -11,60 +13,44 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-var Logger zerolog.Logger
+var (
+	Logger    zerolog.Logger
+	LogBuffer *logbuffer.Buffer
+)
 
 const (
-	colorReset  = "\033[0m"
 	colorRed    = "\033[31m"
 	colorGreen  = "\033[32m"
 	colorYellow = "\033[33m"
-	colorBlue   = "\033[34m"
 	colorCyan   = "\033[36m"
+	colorBlue   = "\033[34m"
 	colorGray   = "\033[90m"
 	colorWhite  = "\033[97m"
-
-	colorBgRed = "\033[41m"
+	colorBgRed  = "\033[41m"
+	colorReset  = "\033[0m"
 )
 
 func Init(debug bool, quiet bool) {
 	zerolog.TimeFieldFormat = time.RFC3339
+	LogBuffer = logbuffer.New(200)
 
-	output := zerolog.ConsoleWriter{
-		Out:        os.Stdout,
-		TimeFormat: "2006/01/02 - 15:04:05",
-		NoColor:    false,
-		PartsOrder: []string{
-			zerolog.LevelFieldName,
-			zerolog.TimestampFieldName,
-			zerolog.MessageFieldName,
-		},
-		FormatLevel: func(i interface{}) string {
-			var level string
-			if ll, ok := i.(string); ok {
-				switch ll {
-				case "debug":
-					level = colorGray + "DBG" + colorReset
-				case "info":
-					level = colorGreen + "INF" + colorReset
-				case "warn":
-					level = colorYellow + "WRN" + colorReset
-				case "error":
-					level = colorRed + "ERR" + colorReset
-				case "fatal":
-					level = colorBgRed + colorWhite + "FTL" + colorReset
-				default:
-					level = "???"
-				}
-			}
-			return level
-		},
-		FormatFieldName: func(i interface{}) string {
-			return fmt.Sprintf("%s=", i)
-		},
-		FormatFieldValue: func(i interface{}) string {
-			return fmt.Sprintf("\"%s\"", i)
-		},
+	var writers []io.Writer
+
+	// Always write JSON to the buffer
+	writers = append(writers, LogBuffer)
+
+	// Add console writer based on mode
+	if !quiet {
+		if debug {
+			// In debug mode, use pretty console output
+			writers = append(writers, zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: "15:04:05"})
+		} else {
+			// In production, write JSON to stdout as well
+			writers = append(writers, os.Stdout)
+		}
 	}
+
+	multi := zerolog.MultiLevelWriter(writers...)
 
 	var level zerolog.Level
 	if quiet {
@@ -75,7 +61,12 @@ func Init(debug bool, quiet bool) {
 		level = zerolog.InfoLevel
 	}
 
-	Logger = zerolog.New(output).Level(level).With().Timestamp().Logger()
+	Logger = zerolog.New(multi).
+		Level(level).
+		With().
+		Timestamp().
+		Logger()
+
 	log.Logger = Logger
 }
 
@@ -123,7 +114,6 @@ func GinLogger() gin.HandlerFunc {
 			path = path + "?" + raw
 		}
 
-		// Format status code with color
 		var statusColor string
 		statusText := fmt.Sprintf("%d", statusCode)
 		switch {
@@ -139,7 +129,6 @@ func GinLogger() gin.HandlerFunc {
 			statusColor = colorWhite + statusText + colorReset
 		}
 
-		// Format method with color
 		var methodColor string
 		switch method {
 		case "GET":
@@ -154,10 +143,8 @@ func GinLogger() gin.HandlerFunc {
 			methodColor = colorCyan + method + colorReset
 		}
 
-		// Format latency
 		latencyStr := fmt.Sprintf("%.2fms", float64(latency.Microseconds())/1000.0)
 
-		// Log with simplified format: METHOD /path STATUS IP latency
 		message := fmt.Sprintf("%s %s %s %s %s",
 			methodColor,
 			path,
@@ -179,12 +166,23 @@ func GinRecovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if err := recover(); err != nil {
+				// Get stack trace
+				buf := make([]byte, 4096)
+				n := runtime.Stack(buf, false)
+				stackTrace := string(buf[:n])
+
 				Error().
 					Interface("error", err).
 					Str("path", c.Request.URL.Path).
 					Str("method", c.Request.Method).
+					Str("stack", stackTrace).
 					Msg("Panic recovered")
-				c.AbortWithStatus(500)
+
+				// Return proper JSON error response
+				c.JSON(500, gin.H{
+					"error": fmt.Sprintf("Internal server error: %v", err),
+				})
+				c.Abort()
 			}
 		}()
 		c.Next()

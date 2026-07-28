@@ -1,8 +1,10 @@
 package sign
 
 import (
+	"archive/zip"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,47 +23,116 @@ func ExtractEntitlementsFromIPAWithProgress(ipaPath string, progressCallback fun
 		progressCallback = func(float64, string) {}
 	}
 
-	tmpDir, err := os.MkdirTemp("", "entitlements-extract-*")
+	progressCallback(10, "Opening IPA file...")
+	zipReader, err := zip.OpenReader(ipaPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp directory: %w", err)
+		return nil, fmt.Errorf("failed to open IPA file: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer zipReader.Close()
 
-	progressCallback(10, "Extracting IPA...")
-	err = extractZipWithProgress(ipaPath, tmpDir, func(progress float64) {
-		progressCallback(10+progress*70/100, "Extracting IPA...")
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to extract IPA: %w", err)
-	}
+	progressCallback(20, "Searching for entitlements file...")
+	var entitlementsFile *zip.File
+	var mobileprovisionFile *zip.File
+	var infoPlistFile *zip.File
+	var executableFile *zip.File
+	var executableName string
 
-	progressCallback(80, "Locating app folder...")
-	payloadFolder := filepath.Join(tmpDir, "Payload")
-	appFolder, err := locateAppFolder(payloadFolder)
-	if err != nil {
-		return nil, fmt.Errorf("failed to locate app folder: %w", err)
-	}
-
-	progressCallback(90, "Reading mobileprovision...")
-	mobileprovisionPath := filepath.Join(appFolder, "embedded.mobileprovision")
-
-	if _, err := os.Stat(mobileprovisionPath); err == nil {
-		progressCallback(95, "Parsing entitlements from mobileprovision...")
-		entitlements, err := ExtractEntitlementsFromMobileprovision(mobileprovisionPath)
-		if err == nil {
-			progressCallback(100, "Complete")
-			return entitlements, nil
+	for _, file := range zipReader.File {
+		if strings.Contains(file.Name, ".app/") && !strings.Contains(file.Name, "/Watch/") {
+			if strings.HasSuffix(file.Name, "archived-expanded-entitlements.xcent") {
+				entitlementsFile = file
+			} else if strings.HasSuffix(file.Name, "embedded.mobileprovision") {
+				mobileprovisionFile = file
+			} else if strings.HasSuffix(file.Name, "Info.plist") && infoPlistFile == nil {
+				infoPlistFile = file
+			}
 		}
 	}
 
-	progressCallback(92, "No mobileprovision, trying to extract from executable signature...")
-	entitlements, err := ExtractEntitlementsFromAppFolder(appFolder)
-	if err != nil {
-		return nil, fmt.Errorf("failed to extract entitlements: no embedded.mobileprovision and can't read from signature: %w", err)
+	progressCallback(40, "Checking for entitlements file...")
+	if entitlementsFile != nil {
+		progressCallback(50, "Reading entitlements file...")
+		rc, err := entitlementsFile.Open()
+		if err == nil {
+			defer rc.Close()
+			data, err := io.ReadAll(rc)
+			if err == nil {
+				var entitlements map[string]interface{}
+				_, err = plist.Unmarshal(data, &entitlements)
+				if err == nil {
+					progressCallback(100, "Complete")
+					return entitlements, nil
+				}
+			}
+		}
 	}
 
-	progressCallback(100, "Complete")
-	return entitlements, nil
+	progressCallback(60, "Checking for mobileprovision...")
+	if mobileprovisionFile != nil {
+		progressCallback(70, "Reading mobileprovision...")
+		rc, err := mobileprovisionFile.Open()
+		if err == nil {
+			defer rc.Close()
+			data, err := io.ReadAll(rc)
+			if err == nil {
+				profile, err := ParseProvisioningProfileFromData(data)
+				if err == nil && profile.Entitlements != nil {
+					progressCallback(100, "Complete")
+					return profile.Entitlements, nil
+				}
+			}
+		}
+	}
+
+	progressCallback(80, "Extracting from executable...")
+	if infoPlistFile != nil {
+		rc, err := infoPlistFile.Open()
+		if err == nil {
+			defer rc.Close()
+			data, err := io.ReadAll(rc)
+			if err == nil {
+				var infoPlist map[string]interface{}
+				_, err = plist.Unmarshal(data, &infoPlist)
+				if err == nil {
+					if name, ok := infoPlist["CFBundleExecutable"].(string); ok {
+						executableName = name
+					}
+				}
+			}
+		}
+	}
+
+	if executableName != "" {
+		progressCallback(90, "Reading executable...")
+		for _, file := range zipReader.File {
+			if strings.HasSuffix(file.Name, "/"+executableName) && strings.Contains(file.Name, ".app/") {
+				executableFile = file
+				break
+			}
+		}
+
+		if executableFile != nil {
+			rc, err := executableFile.Open()
+			if err == nil {
+				defer rc.Close()
+				data, err := io.ReadAll(rc)
+				if err == nil {
+					progressCallback(95, "Extracting entitlements from executable...")
+					csOffset, csSize, err := FindCodeSignatureOffset(data, 0)
+					if err == nil && csOffset > 0 && csSize > 0 {
+						csData := data[csOffset : csOffset+csSize]
+						entitlements, err := ExtractEntitlementsFromCodeSignature(csData)
+						if err == nil {
+							progressCallback(100, "Complete")
+							return entitlements, nil
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("failed to extract entitlements: no entitlements file, mobileprovision, or valid executable signature found")
 }
 
 func ExtractEntitlementsFromMobileprovision(mobileprovisionPath string) (map[string]interface{}, error) {
@@ -74,15 +145,24 @@ func ExtractEntitlementsFromMobileprovision(mobileprovisionPath string) (map[str
 }
 
 func ParseProvisioningProfile(filename string) (*ProvisioningProfile, error) {
-	var profile ProvisioningProfile
-	profile.Path = filename
-	profile.Filename = filepath.Base(filename)
-
 	content, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read mobileprovision file: %w", err)
 	}
 
+	profile, err := ParseProvisioningProfileFromData(content)
+	if err != nil {
+		return nil, err
+	}
+
+	profile.Path = filename
+	profile.Filename = filepath.Base(filename)
+
+	return profile, nil
+}
+
+func ParseProvisioningProfileFromData(content []byte) (*ProvisioningProfile, error) {
+	var profile ProvisioningProfile
 	profile.rawData = content
 
 	xmlContent, err := extractPlistFromMobileprovision(content)
@@ -91,10 +171,13 @@ func ParseProvisioningProfile(filename string) (*ProvisioningProfile, error) {
 	}
 
 	var mobileProvision struct {
-		ExpirationDate time.Time              `plist:"ExpirationDate"`
-		CreationDate   time.Time              `plist:"CreationDate"`
-		Name           string                 `plist:"Name"`
-		Entitlements   map[string]interface{} `plist:"Entitlements"`
+		ExpirationDate        time.Time              `plist:"ExpirationDate"`
+		CreationDate          time.Time              `plist:"CreationDate"`
+		Name                  string                 `plist:"Name"`
+		Entitlements          map[string]interface{} `plist:"Entitlements"`
+		DeveloperCertificates [][]byte               `plist:"DeveloperCertificates"`
+		ProvisionsAllDevices  bool                   `plist:"ProvisionsAllDevices"`
+		ProvisionedDevices    []string               `plist:"ProvisionedDevices"`
 	}
 
 	_, err = plist.Unmarshal([]byte(xmlContent), &mobileProvision)
@@ -114,6 +197,9 @@ func ParseProvisioningProfile(filename string) (*ProvisioningProfile, error) {
 	profile.Created = mobileProvision.CreationDate
 	profile.Name = mobileProvision.Name
 	profile.Entitlements = mobileProvision.Entitlements
+	profile.DeveloperCertificates = mobileProvision.DeveloperCertificates
+	profile.ProvisionsAllDevices = mobileProvision.ProvisionsAllDevices
+	profile.ProvisionedDevices = mobileProvision.ProvisionedDevices
 
 	return &profile, nil
 }

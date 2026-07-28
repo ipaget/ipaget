@@ -72,6 +72,22 @@ func (s *Service) ListApps(device ios.DeviceEntry, deviceAppleID string) ([]mode
 			appInfo.SequenceNumber = seqNum
 		}
 
+		if size, ok := app["StaticDiskUsage"].(uint64); ok {
+			appInfo.AppSize = size
+		} else if size, ok := app["StaticDiskUsage"].(float64); ok {
+			appInfo.AppSize = uint64(size)
+		} else if size, ok := app["StaticDiskUsage"].(int64); ok {
+			appInfo.AppSize = uint64(size)
+		}
+
+		if size, ok := app["DynamicDiskUsage"].(uint64); ok {
+			appInfo.DataSize = size
+		} else if size, ok := app["DynamicDiskUsage"].(float64); ok {
+			appInfo.DataSize = uint64(size)
+		} else if size, ok := app["DynamicDiskUsage"].(int64); ok {
+			appInfo.DataSize = uint64(size)
+		}
+
 		// Extract raw data (convert to serializable format)
 		rawData := make(map[string]interface{})
 		for key, value := range app {
@@ -133,7 +149,16 @@ func (s *Service) CalculateAppSizesAsync(device ios.DeviceEntry, udid string, bu
 		}
 		defer svc.Close()
 
-		apps, err := svc.BrowseAllApps()
+		// Use Browse with specific attributes to ensure we get disk usage
+		options := installationproxy.Options{
+			ReturnAttributes: []string{
+				"CFBundleIdentifier",
+				"StaticDiskUsage",
+				"DynamicDiskUsage",
+			},
+		}
+
+		apps, err := svc.Browse(options)
 		if err != nil {
 			logger.Error().Err(err).Str("udid", udid).Msg("Failed to browse apps for size calculation")
 			return
@@ -155,22 +180,44 @@ func (s *Service) CalculateAppSizesAsync(device ios.DeviceEntry, udid string, bu
 			var appSize, dataSize uint64
 			if size, ok := app["StaticDiskUsage"].(uint64); ok {
 				appSize = size
+			} else if size, ok := app["StaticDiskUsage"].(float64); ok {
+				appSize = uint64(size)
+			} else if size, ok := app["StaticDiskUsage"].(int64); ok {
+				appSize = uint64(size)
 			}
+
 			if size, ok := app["DynamicDiskUsage"].(uint64); ok {
 				dataSize = size
+			} else if size, ok := app["DynamicDiskUsage"].(float64); ok {
+				dataSize = uint64(size)
+			} else if size, ok := app["DynamicDiskUsage"].(int64); ok {
+				dataSize = uint64(size)
 			}
+
+			// Log the sizes found
+			logger.Debug().
+				Str("udid", udid).
+				Str("bundle_id", bundleID).
+				Uint64("app_size", appSize).
+				Uint64("data_size", dataSize).
+				Msg("Size calculation result")
 
 			// Only broadcast if we have size data
 			if appSize > 0 || dataSize > 0 {
-				update := models.AppSizeUpdate{
-					Type:     "app_size_update",
-					UDID:     udid,
-					BundleID: bundleID,
-					AppSize:  appSize,
-					DataSize: dataSize,
-				}
-
-				broadcastFunc(update)
+				broadcastFunc(models.TaskProgress{
+					Type:     "task_progress",
+					TaskID:   fmt.Sprintf("app_size_%s_%s", udid, bundleID),
+					TaskType: "app_size_calculation",
+					Status:   "completed",
+					Progress: 100,
+					Message:  "App size calculated",
+					Data: map[string]interface{}{
+						"udid":      udid,
+						"bundle_id": bundleID,
+						"app_size":  appSize,
+						"data_size": dataSize,
+					},
+				})
 			}
 		}
 
@@ -189,9 +236,11 @@ func (s *Service) InstallApp(device ios.DeviceEntry, ipaPath string, taskID stri
 			Status:   "started",
 			Progress: 0,
 			Message:  "Starting installation...",
-			UDID:     udid,
-			BundleID: bundleID,
-			FilePath: ipaPath,
+			Data: map[string]interface{}{
+				"udid":      udid,
+				"bundle_id": bundleID,
+				"file_path": ipaPath,
+			},
 		})
 	}
 
@@ -205,9 +254,11 @@ func (s *Service) InstallApp(device ios.DeviceEntry, ipaPath string, taskID stri
 				Status:   "error",
 				Progress: 0,
 				Message:  fmt.Sprintf("Failed to create zipconduit: %v", err),
-				UDID:     udid,
-				BundleID: bundleID,
-				FilePath: ipaPath,
+				Data: map[string]interface{}{
+					"udid":      udid,
+					"bundle_id": bundleID,
+					"file_path": ipaPath,
+				},
 			})
 		}
 		return fmt.Errorf("failed to create zipconduit: %w", err)
@@ -222,9 +273,11 @@ func (s *Service) InstallApp(device ios.DeviceEntry, ipaPath string, taskID stri
 			Status:   "progress",
 			Progress: 20,
 			Message:  "Preparing IPA file...",
-			UDID:     udid,
-			BundleID: bundleID,
-			FilePath: ipaPath,
+			Data: map[string]interface{}{
+				"udid":      udid,
+				"bundle_id": bundleID,
+				"file_path": ipaPath,
+			},
 		})
 	}
 
@@ -236,9 +289,11 @@ func (s *Service) InstallApp(device ios.DeviceEntry, ipaPath string, taskID stri
 			Status:   "progress",
 			Progress: 40,
 			Message:  "Uploading IPA to device...",
-			UDID:     udid,
-			BundleID: bundleID,
-			FilePath: ipaPath,
+			Data: map[string]interface{}{
+				"udid":      udid,
+				"bundle_id": bundleID,
+				"file_path": ipaPath,
+			},
 		})
 	}
 
@@ -252,9 +307,11 @@ func (s *Service) InstallApp(device ios.DeviceEntry, ipaPath string, taskID stri
 				Status:   "error",
 				Progress: 0,
 				Message:  fmt.Sprintf("Failed to install: %v", err),
-				UDID:     udid,
-				BundleID: bundleID,
-				FilePath: ipaPath,
+				Data: map[string]interface{}{
+					"udid":      udid,
+					"bundle_id": bundleID,
+					"file_path": ipaPath,
+				},
 			})
 		}
 		return fmt.Errorf("failed to send file: %w", err)
@@ -268,9 +325,11 @@ func (s *Service) InstallApp(device ios.DeviceEntry, ipaPath string, taskID stri
 			Status:   "progress",
 			Progress: 80,
 			Message:  "Finalizing installation...",
-			UDID:     udid,
-			BundleID: bundleID,
-			FilePath: ipaPath,
+			Data: map[string]interface{}{
+				"udid":      udid,
+				"bundle_id": bundleID,
+				"file_path": ipaPath,
+			},
 		})
 	}
 
@@ -282,9 +341,11 @@ func (s *Service) InstallApp(device ios.DeviceEntry, ipaPath string, taskID stri
 			Status:   "completed",
 			Progress: 100,
 			Message:  "App installed successfully",
-			UDID:     udid,
-			BundleID: bundleID,
-			FilePath: ipaPath,
+			Data: map[string]interface{}{
+				"udid":      udid,
+				"bundle_id": bundleID,
+				"file_path": ipaPath,
+			},
 		})
 	}
 
@@ -317,8 +378,10 @@ func (s *Service) UninstallApp(device ios.DeviceEntry, bundleID string, taskID s
 			Status:   "started",
 			Progress: 0,
 			Message:  "Starting uninstall process...",
-			UDID:     udid,
-			BundleID: bundleID,
+			Data: map[string]interface{}{
+				"udid":      udid,
+				"bundle_id": bundleID,
+			},
 		})
 	}
 
@@ -330,8 +393,10 @@ func (s *Service) UninstallApp(device ios.DeviceEntry, bundleID string, taskID s
 			Status:   "progress",
 			Progress: 30,
 			Message:  "Connecting to device...",
-			UDID:     udid,
-			BundleID: bundleID,
+			Data: map[string]interface{}{
+				"udid":      udid,
+				"bundle_id": bundleID,
+			},
 		})
 	}
 
@@ -345,8 +410,10 @@ func (s *Service) UninstallApp(device ios.DeviceEntry, bundleID string, taskID s
 				Status:   "error",
 				Progress: 0,
 				Message:  fmt.Sprintf("Failed to create installation proxy: %v", err),
-				UDID:     udid,
-				BundleID: bundleID,
+				Data: map[string]interface{}{
+					"udid":      udid,
+					"bundle_id": bundleID,
+				},
 			})
 		}
 		return fmt.Errorf("failed to create installation proxy: %w", err)
@@ -361,8 +428,10 @@ func (s *Service) UninstallApp(device ios.DeviceEntry, bundleID string, taskID s
 			Status:   "progress",
 			Progress: 60,
 			Message:  "Removing application...",
-			UDID:     udid,
-			BundleID: bundleID,
+			Data: map[string]interface{}{
+				"udid":      udid,
+				"bundle_id": bundleID,
+			},
 		})
 	}
 
@@ -376,8 +445,10 @@ func (s *Service) UninstallApp(device ios.DeviceEntry, bundleID string, taskID s
 				Status:   "error",
 				Progress: 0,
 				Message:  fmt.Sprintf("Failed to uninstall: %v", err),
-				UDID:     udid,
-				BundleID: bundleID,
+				Data: map[string]interface{}{
+					"udid":      udid,
+					"bundle_id": bundleID,
+				},
 			})
 		}
 		return fmt.Errorf("failed to uninstall app: %w", err)
@@ -391,8 +462,10 @@ func (s *Service) UninstallApp(device ios.DeviceEntry, bundleID string, taskID s
 			Status:   "completed",
 			Progress: 100,
 			Message:  "App uninstalled successfully",
-			UDID:     udid,
-			BundleID: bundleID,
+			Data: map[string]interface{}{
+				"udid":      udid,
+				"bundle_id": bundleID,
+			},
 		})
 	}
 
@@ -459,11 +532,18 @@ func (s *Service) KillApp(device ios.DeviceEntry, bundleID string) error {
 func getBestName(app installationproxy.AppInfo) string {
 	bundleID := app.CFBundleIdentifier()
 
-	if name := app.CFBundleName(); name != "" {
-		return name
+	// Try to get localized name from CFBundleLocalizations
+	localizedName := extractLocalizedNameFromApp(app)
+	if localizedName != "" {
+		return localizedName
 	}
+
+	// Priority: CFBundleDisplayName > CFBundleName > BundleID
 	if displayName, ok := app["CFBundleDisplayName"].(string); ok && displayName != "" {
 		return displayName
+	}
+	if name := app.CFBundleName(); name != "" {
+		return name
 	}
 
 	// No name found, use BundleID as fallback
@@ -635,4 +715,52 @@ func findInString(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// extractLocalizedNameFromApp tries to extract localized app name from installed app metadata
+// Note: This is best-effort since we don't have direct access to InfoPlist.strings files for installed apps
+func extractLocalizedNameFromApp(app installationproxy.AppInfo) string {
+	// Check if there's a CFBundleDisplayName dict with localized values
+	if displayNameObj, ok := app["CFBundleDisplayName"]; ok {
+		// If it's already a string, return it
+		if displayName, ok := displayNameObj.(string); ok && displayName != "" {
+			return displayName
+		}
+		// If it's a dict with localized values (rare but possible)
+		if displayNameDict, ok := displayNameObj.(map[string]interface{}); ok {
+			// Try Chinese first
+			for _, lang := range []string{"zh-Hans", "zh-Hant", "zh_CN", "zh_TW", "zh", "en"} {
+				if name, ok := displayNameDict[lang].(string); ok && name != "" {
+					return name
+				}
+			}
+			// Return any available localization
+			for _, v := range displayNameDict {
+				if name, ok := v.(string); ok && name != "" {
+					return name
+				}
+			}
+		}
+	}
+
+	// Similar check for CFBundleName
+	if bundleNameObj, ok := app["CFBundleName"]; ok {
+		if bundleName, ok := bundleNameObj.(string); ok && bundleName != "" {
+			return bundleName
+		}
+		if bundleNameDict, ok := bundleNameObj.(map[string]interface{}); ok {
+			for _, lang := range []string{"zh-Hans", "zh-Hant", "zh_CN", "zh_TW", "zh", "en"} {
+				if name, ok := bundleNameDict[lang].(string); ok && name != "" {
+					return name
+				}
+			}
+			for _, v := range bundleNameDict {
+				if name, ok := v.(string); ok && name != "" {
+					return name
+				}
+			}
+		}
+	}
+
+	return ""
 }
