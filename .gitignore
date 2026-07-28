@@ -1,5 +1,14 @@
+# Outputs
+device-info-exports/
+*.ipa
+Feather*.ipa
+test.md
+.cursor/
+
 # For reference only
-ref
+ref/
+# Keep only the reference index if needed later:
+# !ref/README.md
 
 # Dependencies
 node_modules/
