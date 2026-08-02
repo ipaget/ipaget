@@ -58,11 +58,6 @@ func (h *Hub) Run() {
 				logEvent = logEvent.
 					Str("serial_number", devEvent.SerialNumber).
 					Int("device_id", devEvent.DeviceID)
-			} else if sizeUpdate, ok := event.(models.AppSizeUpdate); ok {
-				eventType = sizeUpdate.Type
-				logEvent = logEvent.
-					Str("udid", sizeUpdate.UDID).
-					Str("bundle_id", sizeUpdate.BundleID)
 			} else if taskProgress, ok := event.(models.TaskProgress); ok {
 				eventType = taskProgress.Type
 				logEvent = logEvent.
@@ -71,14 +66,16 @@ func (h *Hub) Run() {
 					Str("status", taskProgress.Status).
 					Float64("progress", taskProgress.Progress).
 					Str("message", taskProgress.Message)
-				if taskProgress.UDID != "" {
-					logEvent = logEvent.Str("udid", taskProgress.UDID)
-				}
-				if taskProgress.BundleID != "" {
-					logEvent = logEvent.Str("bundle_id", taskProgress.BundleID)
-				}
-				if taskProgress.FilePath != "" {
-					logEvent = logEvent.Str("file_path", taskProgress.FilePath)
+				if taskProgress.Data != nil {
+					if udid, ok := taskProgress.Data["udid"].(string); ok && udid != "" {
+						logEvent = logEvent.Str("udid", udid)
+					}
+					if bundleID, ok := taskProgress.Data["bundle_id"].(string); ok && bundleID != "" {
+						logEvent = logEvent.Str("bundle_id", bundleID)
+					}
+					if filePath, ok := taskProgress.Data["file_path"].(string); ok && filePath != "" {
+						logEvent = logEvent.Str("file_path", filePath)
+					}
 				}
 			}
 
@@ -118,6 +115,10 @@ func (h *Hub) Register(client *Client) {
 	h.register <- client
 }
 
+func (h *Hub) Unregister(client *Client) {
+	h.unregister <- client
+}
+
 type Client struct {
 	hub  *Hub
 	conn *websocket.Conn
@@ -139,9 +140,15 @@ func (c *Client) ReadPump() {
 	}()
 
 	for {
-		_, _, err := c.conn.ReadMessage()
+		msgType, msg, err := c.conn.ReadMessage()
 		if err != nil {
 			break
+		}
+		// Simple debug ping/pong
+		if msgType == websocket.TextMessage {
+			if string(msg) == "{\"type\":\"ping\"}" {
+				_ = c.conn.WriteMessage(websocket.TextMessage, []byte("{\"type\":\"pong\"}"))
+			}
 		}
 	}
 }
