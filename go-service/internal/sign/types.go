@@ -3,15 +3,18 @@ package sign
 import "time"
 
 type ProvisioningProfile struct {
-	Filename     string
-	Name         string
-	Created      time.Time
-	Expires      time.Time
-	AppID        string
-	TeamID       string
-	Entitlements map[string]interface{}
-	Path         string
-	rawData      []byte
+	Filename              string
+	Name                  string
+	Created               time.Time
+	Expires               time.Time
+	AppID                 string
+	TeamID                string
+	Entitlements          map[string]interface{}
+	DeveloperCertificates [][]byte
+	Path                  string
+	rawData               []byte
+	ProvisionsAllDevices  bool
+	ProvisionedDevices    []string
 }
 
 type SignerOptions struct {

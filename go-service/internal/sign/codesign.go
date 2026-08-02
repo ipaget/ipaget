@@ -22,6 +22,10 @@ func LoadP12Certificate(p12Path, password string) (*Certificate, []byte, crypto.
 		return nil, nil, nil, fmt.Errorf("failed to read P12 file: %w", err)
 	}
 
+	return LoadP12CertificateFromData(p12Data, password)
+}
+
+func LoadP12CertificateFromData(p12Data []byte, password string) (*Certificate, []byte, crypto.PrivateKey, error) {
 	privateKey, x509Cert, err := pkcs12.Decode(p12Data, password)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to decode P12 file: %w", err)
@@ -478,7 +482,7 @@ func getAppleCertificates(cert *x509.Certificate) ([]*x509.Certificate, error) {
 
 	if issuerHash == 0x817d2f7a {
 		intermediateCert, err = parsePEMCertificate(appleWWDRCA)
-	} else if issuerHash == 0x9b16b75c {
+	} else if issuerHash == 0x3729dfea || issuerHash == 0x9b16b75c {
 		intermediateCert, err = parsePEMCertificate(appleWWDRCAG3)
 	} else {
 		return nil, fmt.Errorf("unknown issuer hash: 0x%x", issuerHash)
