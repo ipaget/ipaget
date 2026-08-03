@@ -6,6 +6,7 @@ interface CodeInputProps {
   onChange: (value: string) => void;
   onComplete?: (value: string) => void;
   disabled?: boolean;
+  error?: boolean;
 }
 
 export default function CodeInput({
@@ -14,9 +15,12 @@ export default function CodeInput({
   onChange,
   onComplete,
   disabled = false,
+  error = false,
 }: CodeInputProps) {
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const [focusedIndex, setFocusedIndex] = useState(0);
+
+  const normalizedValue = value.slice(0, length).padEnd(length, " ");
 
   useEffect(() => {
     if (inputRefs.current[0]) {
@@ -35,9 +39,9 @@ export default function CodeInput({
 
     if (!/^\d*$/.test(digit)) return;
 
-    const newValue = value.split("");
-    newValue[index] = digit;
-    const updatedValue = newValue.join("");
+		const nextChars = normalizedValue.split("");
+		nextChars[index] = digit.slice(-1) || " ";
+		const updatedValue = nextChars.join("").replace(/\s+$/g, "");
 
     onChange(updatedValue);
 
@@ -51,13 +55,19 @@ export default function CodeInput({
 
     if (e.key === "Backspace") {
       e.preventDefault();
-      const newValue = value.split("");
-      newValue[index] = "";
-      onChange(newValue.join(""));
+    const nextChars = normalizedValue.split("");
+    if ((normalizedValue[index] || " ") !== " ") {
+      nextChars[index] = " ";
+      onChange(nextChars.join("").replace(/\s+$/g, ""));
+      return;
+    }
 
-      if (index > 0) {
-        inputRefs.current[index - 1]?.focus();
-      }
+    if (index > 0) {
+      nextChars[index - 1] = " ";
+      onChange(nextChars.join("").replace(/\s+$/g, ""));
+      inputRefs.current[index - 1]?.focus();
+    }
+
     } else if (e.key === "ArrowLeft" && index > 0) {
       inputRefs.current[index - 1]?.focus();
     } else if (e.key === "ArrowRight" && index < length - 1) {
@@ -90,7 +100,7 @@ export default function CodeInput({
           type="text"
           inputMode="numeric"
           maxLength={1}
-          value={value[index] || ""}
+			  value={normalizedValue[index] === " " ? "" : normalizedValue[index]}
           onChange={(e) => handleChange(index, e.target.value)}
           onKeyDown={(e) => handleKeyDown(index, e)}
           onPaste={handlePaste}
@@ -98,18 +108,16 @@ export default function CodeInput({
           disabled={disabled}
           className={`w-12 h-14 text-center text-2xl font-semibold border-2 rounded-lg transition-all
             ${
-              focusedIndex === index && !disabled
-                ? "border-blue-500 ring-2 ring-blue-200 dark:ring-blue-800"
-                : "border-gray-300 dark:border-gray-600"
+              error
+                ? "border-red-500"
+                : focusedIndex === index && !disabled
+                ? "border-blue-500 ring-2 ring-blue-200"
+                : "border-gray-300"
             }
-            ${
-              value[index]
-                ? "bg-blue-50 dark:bg-blue-900/20"
-                : "bg-white dark:bg-gray-700"
-            }
+            bg-white
             ${disabled ? "opacity-50 cursor-not-allowed" : ""}
             focus:outline-none
-            text-gray-900 dark:text-white
+            text-gray-900
           `}
         />
       ))}
