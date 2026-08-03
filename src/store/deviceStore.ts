@@ -1,4 +1,4 @@
-import { create } from "zustand";
+import { createWithEqualityFn } from "zustand/traditional";
 import type { DeviceInfo } from "../lib/goService";
 
 export type { DeviceInfo };
@@ -10,6 +10,10 @@ export interface AppInfo {
   icon_url?: string;
   icon_data?: string;
   auth_type: string;
+  purchaser_apple_id?: string;
+  is_shared_library?: boolean;
+  shared_group_id?: string;
+  shared_by_bundle_ids?: string[];
   build_machine_os_build?: string;
   cf_bundle_executable?: string;
   signer_identity?: string;
@@ -21,6 +25,7 @@ export interface AppInfo {
   sequence_number?: number;
   app_size?: number;
   data_size?: number;
+  size_measured?: boolean;
   raw_data?: Record<string, any>;
   entitlements_xml?: string;
 }
@@ -58,6 +63,7 @@ interface DeviceState {
   setTrustStatus: (status: "pairing" | "device_locked" | "waiting_trust" | "success" | "timeout") => void;
   setPairingDeviceUdid: (udid: string | null) => void;
   triggerRefresh: () => void;
+  removeConnectedDevice: (udid: string) => void;
   
   // Device Apps Cache Actions
   setDeviceAppsCache: (udid: string, apps: AppInfo[], icons: Record<string, string>) => void;
@@ -66,7 +72,7 @@ interface DeviceState {
   clearAllDeviceAppsCache: () => void;
 }
 
-export const useDeviceStore = create<DeviceState>((set, get) => ({
+export const useDeviceStore = createWithEqualityFn<DeviceState>((set, get) => ({
   // Device Management
   connectedDevices: [],
   selectedDevice: null,
@@ -84,7 +90,34 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   deviceAppsCache: new Map(),
   
   // Actions
-  setConnectedDevices: (devices) => set({ connectedDevices: devices }),
+  setConnectedDevices: (devices) => set((state) => {
+    // If no device is currently selected and we have devices, auto-select the first one
+    let newSelectedDevice = state.selectedDevice;
+    
+    if (!state.selectedDevice && devices.length > 0) {
+      newSelectedDevice = devices[0];
+      console.log(`[DeviceStore] Auto-selecting first device: ${devices[0].name} (${devices[0].udid})`);
+    } else if (state.selectedDevice) {
+      // Check if the selected device is still connected
+      const stillConnected = devices.find(d => d.udid === state.selectedDevice!.udid);
+      if (!stillConnected) {
+        // Selected device disconnected, clear selection or auto-select first device
+        newSelectedDevice = devices.length > 0 ? devices[0] : null;
+        if (newSelectedDevice) {
+          console.log(`[DeviceStore] Previous device disconnected, auto-selecting: ${newSelectedDevice.name}`);
+        } else {
+          console.log(`[DeviceStore] Previous device disconnected, no devices available`);
+        }
+      }
+    }
+    
+    console.log(`[DeviceStore] setConnectedDevices: ${devices.length} devices, selected: ${newSelectedDevice?.name || 'none'}`);
+    
+    return { 
+      connectedDevices: devices,
+      selectedDevice: newSelectedDevice
+    };
+  }),
   setSelectedDevice: (device) => set({ selectedDevice: device }),
   setIsRefreshing: (isRefreshing) => set({ isRefreshing }),
   setRefreshCompleted: (completed) => set({ refreshCompleted: completed }),
@@ -97,6 +130,27 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
       refreshTrigger: state.refreshTrigger + 1
     }));
   },
+
+  removeConnectedDevice: (udid) => set((state) => {
+    const remainingDevices = state.connectedDevices.filter((device) => device.udid !== udid);
+    if (remainingDevices.length === state.connectedDevices.length) {
+      return state;
+    }
+
+    let nextSelectedDevice = state.selectedDevice;
+    if (state.selectedDevice?.udid === udid) {
+      nextSelectedDevice = remainingDevices.length > 0 ? remainingDevices[0] : null;
+    }
+
+    console.log(
+      `[DeviceStore] removeConnectedDevice: ${udid}, remaining=${remainingDevices.length}, selected=${nextSelectedDevice?.name || "none"}`
+    );
+
+    return {
+      connectedDevices: remainingDevices,
+      selectedDevice: nextSelectedDevice,
+    };
+  }),
   
   // Device Apps Cache Actions
   setDeviceAppsCache: (udid, apps, icons) => {
@@ -127,4 +181,3 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
     set({ deviceAppsCache: new Map() });
   },
 }));
-
