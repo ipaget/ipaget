@@ -45,19 +45,24 @@ pub fn start_watching<P: AsRef<Path>>(app_handle: AppHandle, path: P) -> NotifyR
 
 fn handle_file_event(app_handle: &AppHandle, event: Event) {
     use notify::EventKind;
+
+    let is_supported_ipa = |path: &std::path::Path| {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "ipa" | "tipa"))
+            .unwrap_or(false)
+    };
     
     match event.kind {
         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
             // Check if any path is an IPA file
             for path in event.paths {
-                if let Some(extension) = path.extension() {
-                    if extension == "ipa" {
-                        log::info!("IPA file change detected: {:?}", path);
-                        if let Err(e) = app_handle.emit("download-directory-changed", ()) {
-                            log::error!("Failed to emit file change event: {:?}", e);
-                        }
-                        break;
+                if is_supported_ipa(&path) {
+                    log::info!("IPA file change detected: {:?}", path);
+                    if let Err(e) = app_handle.emit("download-directory-changed", ()) {
+                        log::error!("Failed to emit file change event: {:?}", e);
                     }
+                    break;
                 }
             }
         }
