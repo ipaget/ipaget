@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment, useCallback } from "react";
+import { useState, useEffect, useRef, Fragment, useCallback, useMemo } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Smartphone,
@@ -18,6 +18,8 @@ import {
   Copy,
   ChevronDown,
   Info as InfoIcon,
+  Usb,
+  Wifi,
 } from "lucide-react";
 import { Menu, Transition } from "@headlessui/react";
 import { useTranslation } from "react-i18next";
@@ -25,7 +27,6 @@ import { useTimeoutFn, useClickAway, useCopyToClipboard, useInterval } from "rea
 import { useErrorStore } from "../store/errorStore";
 import { useToastStore } from "../store/toastStore";
 import { useDeviceStore } from "../store/deviceStore";
-import { useAppStore } from "../store/appStore";
 import { useTask } from "../hooks/useTask";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { DataTable, DataTableColumn } from "../components/DataTable";
@@ -41,6 +42,9 @@ import DeviceDetailsDialog from "../components/DeviceDetailsDialog";
 import IpaPreviewDialog from "../components/IpaPreviewDialog";
 import InstallingAppsBlock from "../components/InstallingAppsBlock";
 import { useDropZone } from "../hooks/useDropZone";
+import { useInstallStore } from "../store/installStore";
+import PageLoading from "../components/PageLoading";
+import Button3D from "../components/Button3D";
 
 export default function DevicesPage() {
   const { t } = useTranslation();
@@ -71,13 +75,16 @@ export default function DevicesPage() {
   const [showSystemApps, setShowSystemApps] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedAppIds, setSelectedAppIds] = useState<Set<string>>(new Set());
-  const [sortField, setSortField] = useState<'name' | 'auth_type' | 'version'>('name');
+
+  type AppSortField = 'name' | 'auth_type' | 'version' | 'app_size';
+  const [sortField, setSortField] = useState<AppSortField>('name');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [selectedAppForDetails, setSelectedAppForDetails] = useState<AppInfo | null>(null);
   const [contextMenuApp, setContextMenuApp] = useState<AppInfo | null>(null);
   const [contextMenuPosition, setContextMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [showDeviceDetails, setShowDeviceDetails] = useState(false);
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false);
+  const [showBatchUninstallConfirm, setShowBatchUninstallConfirm] = useState(false);
   const [appToUninstall, setAppToUninstall] = useState<{ bundleId: string; appName: string } | null>(null);
   const [ipaPreviewPath, setIpaPreviewPath] = useState<string | null>(null);
   const [deviceLockError, setDeviceLockError] = useState<'locked' | 'timeout' | null>(null);
@@ -88,12 +95,20 @@ export default function DevicesPage() {
   const [hoveringDeviceInfo, setHoveringDeviceInfo] = useState(false);
   const deviceNameTimerRef = useRef<number | null>(null);
   const deviceInfoTimerRef = useRef<number | null>(null);
+  const [disableTableAnimation, setDisableTableAnimation] = useState(false);
+  const previousDeviceUdidRef = useRef<string | undefined>(selectedDevice?.udid);
   
   // Copy to clipboard with react-use
   const [, copyToClipboard] = useCopyToClipboard();
   
+  // Ref to track the latest appIcons without triggering effects
+  const appIconsRef = useRef(appIcons);
+  useEffect(() => {
+    appIconsRef.current = appIcons;
+  }, [appIcons]);
+  
   // Task management using useTask hook
-  const { tasks: uninstallTasks } = useTask("uninstall", selectedDevice?.udid);
+  const { tasks: uninstallTasks } = useTask("uninstall", (data) => data?.udid === selectedDevice?.udid);
   
   // Listen for completed uninstall tasks and remove apps from the list
   useEffect(() => {
@@ -101,22 +116,37 @@ export default function DevicesPage() {
     
     const completedTasks = uninstallTasks.filter(task => 
       task.status === "completed" && 
-      task.udid === selectedDevice.udid
+      task.data?.udid === selectedDevice.udid
     );
     
     if (completedTasks.length > 0) {
+      const bundleIdsToRemove = new Set(completedTasks.map(task => task.data?.bundle_id).filter(Boolean));
+      
       setDeviceApps(prevApps => {
-        const bundleIdsToRemove = new Set(completedTasks.map(task => task.bundle_id).filter(Boolean));
         const newApps = prevApps.filter(app => !bundleIdsToRemove.has(app.bundle_id));
         
-        setDeviceAppsCache(selectedDevice.udid, newApps, appIcons);
+        // Use setTimeout to defer the cache update to avoid nested state updates
+        setTimeout(() => {
+          setDeviceAppsCache(selectedDevice.udid, newApps, appIconsRef.current);
+        }, 0);
         
         return newApps;
       });
       
+      // Clear selection for removed apps - check if selected apps still exist
+      setSelectedAppIds(prevSelected => {
+        const newSelected = new Set(prevSelected);
+        bundleIdsToRemove.forEach(id => newSelected.delete(id));
+        // If all selected apps were removed, clear selection
+        if (newSelected.size === 0 && prevSelected.size > 0) {
+          return new Set();
+        }
+        return newSelected;
+      });
+      
       showToast(t("devices.uninstallSuccess"), "success");
     }
-  }, [uninstallTasks, selectedDevice, t, showToast, appIcons, setDeviceAppsCache]);
+  }, [uninstallTasks, selectedDevice, t, showToast, setDeviceAppsCache]);
   
   // Refs for lock polling
   const lockPollingEnabledRef = useRef(false);
@@ -193,28 +223,65 @@ export default function DevicesPage() {
       const apps = await goServiceClient.listApps(udid);
       console.log('Received apps from backend:', apps.length);
       setDeviceApps(apps);
+      setIsLoadingApps(false);
       
-      let icons = {};
+      // Load icons asynchronously after displaying the app list
       if (apps.length > 0) {
         const bundleIds = apps.map(app => app.bundle_id);
         console.log('Fetching icons for', bundleIds.length, 'apps...');
-        icons = await goServiceClient.getAppIcons(udid, bundleIds);
-        setAppIcons(icons);
+        goServiceClient.getAppIcons(udid, bundleIds).then(icons => {
+          setAppIcons(icons);
+          setDeviceAppsCache(udid, apps, icons);
+        }).catch(err => {
+          console.error('Failed to load icons:', err);
+          setDeviceAppsCache(udid, apps, {});
+        });
+      } else {
+        setDeviceAppsCache(udid, apps, {});
       }
-      
-      console.log('Updating cache with', apps.length, 'apps');
-      setDeviceAppsCache(udid, apps, icons);
     } catch (error: any) {
       console.error("Failed to load device apps:", error);
+      setIsLoadingApps(false);
       
       if (error.message && error.message.includes("PasswordProtected")) {
         setDeviceLockError('locked');
         startLockPolling(udid);
       }
-    } finally {
-      setIsLoadingApps(false);
     }
   }, [clearDeviceAppsCache, setDeviceAppsCache]);
+
+  const refreshDevices = useCallback(async (refreshApps: boolean = false) => {
+    if (refreshCompleted) {
+      resetRefreshCompleted();
+    }
+    
+    setIsRefreshing(true);
+    setRefreshCompleted(false);
+    try {
+      const devices = await goServiceClient.listDevices();
+      setConnectedDevices(devices);
+
+      if (selectedDevice) {
+        const stillConnected = devices.find(
+          (d) => d.udid === selectedDevice.udid
+        );
+        if (!stillConnected) {
+          setDeviceApps([]);
+          setAppIcons({});
+        } else if (refreshApps) {
+          await loadDeviceApps(selectedDevice.udid, true);
+        }
+      }
+      
+      setRefreshCompleted(true);
+      resetRefreshCompleted();
+    } catch (error: any) {
+      console.error("Failed to refresh devices:", error);
+    } finally {
+      setIsRefreshing(false);
+    }
+    // Store functions are stable, selectedDevice and loadDeviceApps are the key dependencies
+  }, [selectedDevice, loadDeviceApps]);
 
   useEffect(() => {
     refreshDevices();
@@ -224,9 +291,7 @@ export default function DevicesPage() {
       e.stopPropagation();
     };
     
-    // Ctrl+F handler for focusing search input
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl+F or Cmd+F to focus search input (only on devices page and not when Shift is pressed)
       if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !e.shiftKey) {
         e.preventDefault();
         searchInputRef.current?.focus();
@@ -248,68 +313,15 @@ export default function DevicesPage() {
         clearTimeout(deviceInfoTimerRef.current);
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    if (selectedDevice) {
-      const cache = getDeviceAppsCache(selectedDevice.udid);
-      if (cache) {
-        setDeviceApps(cache.apps);
-        setAppIcons(cache.icons);
-      } else {
-        loadDeviceApps(selectedDevice.udid);
-      }
-    } else {
-      setDeviceApps([]);
-      setAppIcons({});
-    }
-    
-    return () => {
-      clearLockTimers();
-    };
-  }, [selectedDevice, getDeviceAppsCache, loadDeviceApps]);
 
   useEffect(() => {
     if (refreshTrigger > 0) {
       console.log("Refresh triggered from store, refreshing devices...");
       refreshDevices();
     }
-  }, [refreshTrigger]);
-
-  const refreshDevices = async (refreshApps: boolean = false) => {
-    if (refreshCompleted) {
-      resetRefreshCompleted();
-    }
-    
-    setIsRefreshing(true);
-    setRefreshCompleted(false);
-    try {
-      const devices = await goServiceClient.listDevices();
-      setConnectedDevices(devices);
-
-      if (selectedDevice) {
-        const stillConnected = devices.find(
-          (d) => d.udid === selectedDevice.udid
-        );
-        if (!stillConnected) {
-          setSelectedDevice(null);
-          setDeviceApps([]);
-          setAppIcons({});
-        } else if (refreshApps) {
-          await loadDeviceApps(selectedDevice.udid, true);
-        }
-      } else if (devices.length > 0) {
-        setSelectedDevice(devices[0]);
-      }
-      
-      setRefreshCompleted(true);
-      resetRefreshCompleted();
-    } catch (error: any) {
-      console.error("Failed to refresh devices:", error);
-    } finally {
-      setIsRefreshing(false);
-    }
-  };
+  }, [refreshTrigger, refreshDevices]);
 
   const tryLoadAppsQuietly = async (udid: string): Promise<boolean> => {
     try {
@@ -346,31 +358,101 @@ export default function DevicesPage() {
   );
 
 
-  // Listen for app size updates from global WebSocket (via appStore)
-  const { appSizeUpdates } = useAppStore();
+  // Auto-load apps when selectedDevice changes (including auto-selected first device)
+  useEffect(() => {
+    if (selectedDevice) {
+      const udidChanged = previousDeviceUdidRef.current !== selectedDevice.udid;
+      
+      if (udidChanged) {
+        setDisableTableAnimation(true);
+        previousDeviceUdidRef.current = selectedDevice.udid;
+        
+        setTimeout(() => {
+          setDisableTableAnimation(false);
+        }, 50);
+      }
+      
+      // Check if we have cached apps first
+      const cached = getDeviceAppsCache(selectedDevice.udid);
+      if (cached && cached.apps.length > 0) {
+        setDeviceApps(cached.apps);
+        setAppIcons(cached.icons);
+      } else if (!isLoadingApps) {
+        // Load apps for the newly selected device
+        loadDeviceApps(selectedDevice.udid, false);
+      }
+    } else {
+      // No device selected, clear apps
+      setDeviceApps([]);
+      setAppIcons({});
+      previousDeviceUdidRef.current = undefined;
+    }
+    
+    return () => {
+      clearLockTimers();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDevice?.udid]); // Only trigger when device UDID changes
+
+  // Listen for app size calculation tasks from global task store
+  const { tasks: allAppSizeTasks } = useTask("app_size_calculation");
+  
+  const appSizeTasks = useMemo(() => {
+    return allAppSizeTasks.filter(task => task.data?.udid === selectedDevice?.udid);
+  }, [allAppSizeTasks, selectedDevice?.udid]);
+
+  // Debug log for all tasks
+  useEffect(() => {
+    if (allAppSizeTasks.length > 0) {
+      console.log("All app size tasks:", allAppSizeTasks.length);
+      console.log("Filtered app size tasks:", appSizeTasks.length);
+    }
+  }, [allAppSizeTasks.length, appSizeTasks.length]);
   
   useEffect(() => {
     if (!selectedDevice) return;
     
-    // Update device apps when app size updates arrive
-    setDeviceApps(prevApps => {
-      const newApps = prevApps.map(app => {
-        const sizeUpdate = appSizeUpdates.get(`${selectedDevice.udid}:${app.bundle_id}`);
-        if (sizeUpdate) {
-          return {
-            ...app,
-            app_size: sizeUpdate.app_size,
-            data_size: sizeUpdate.data_size,
-          };
+    // Update device apps when app size calculation completes
+    const completedTasks = appSizeTasks.filter(task => task.status === "completed");
+    
+    if (completedTasks.length > 0) {
+      console.log("App size tasks updated:", completedTasks.length, "completed tasks");
+      console.log("First completed task data:", completedTasks[0]?.data);
+      setDeviceApps(prevApps => {
+        console.log("Current device apps count:", prevApps.length);
+        let hasChanges = false;
+        const newApps = prevApps.map(app => {
+          const sizeTask = completedTasks.find(task => task.data?.bundle_id === app.bundle_id);
+          if (sizeTask?.data) {
+             // Log for debugging
+             console.log(`Updating size for ${app.bundle_id}: app=${sizeTask.data.app_size}, data=${sizeTask.data.data_size}`);
+            
+             if (app.app_size !== sizeTask.data.app_size || app.data_size !== sizeTask.data.data_size || app.size_measured !== true) {
+                hasChanges = true;
+                return {
+                  ...app,
+                  app_size: sizeTask.data.app_size,
+                  data_size: sizeTask.data.data_size,
+                  size_measured: true,
+                };
+             }
+          }
+          return app;
+        });
+        
+        // Only update cache if there were actual changes
+        if (hasChanges) {
+          console.log("Device apps updated with new sizes");
+          // Use setTimeout to defer the cache update to avoid nested state updates
+          setTimeout(() => {
+            setDeviceAppsCache(selectedDevice.udid, newApps, appIconsRef.current);
+          }, 0);
         }
-        return app;
+        
+        return newApps;
       });
-      
-      setDeviceAppsCache(selectedDevice.udid, newApps, appIcons);
-      
-      return newApps;
-    });
-  }, [appSizeUpdates, selectedDevice, appIcons, setDeviceAppsCache]);
+    }
+  }, [appSizeTasks, selectedDevice, setDeviceAppsCache]);
 
   const handleSelectIpaFile = async () => {
     if (!selectedDevice) return;
@@ -394,16 +476,12 @@ export default function DevicesPage() {
     }
   };
 
-  const handleConfirmInstall = async (filePath: string, bundleId?: string, version?: string) => {
-    if (!selectedDevice) return;
-
+  const handleConfirmInstall = async (filePath: string, deviceUdid: string, certificateId?: string | null) => {
     try {
       setIsInstalling(true);
       const fileName = filePath.split(/[/\\]/).pop() || filePath;
       showToast(t("devices.installingFile", { name: fileName }), "info");
-
-      const response = await goServiceClient.installApp(selectedDevice.udid, filePath, bundleId, version);
-      console.log("Install task started:", response);
+      await useInstallStore.getState().startInstall(deviceUdid, filePath, undefined, undefined, undefined, certificateId);
     } catch (error: any) {
       showError(t("devices.installIpaFailed"), error.toString());
     } finally {
@@ -411,35 +489,23 @@ export default function DevicesPage() {
     }
   };
 
-  const handleSort = (field: 'name' | 'auth_type' | 'version') => {
-    if (sortField === field) {
+  const isAppSortField = useCallback((key: string): key is AppSortField => {
+    return key === 'name' || key === 'auth_type' || key === 'version' || key === 'app_size';
+  }, []);
+
+  const handleSort = useCallback((key: string) => {
+    if (!isAppSortField(key)) return;
+
+    if (sortField === key) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortDirection('asc');
+      return;
     }
-  };
 
-  const handleSelectApp = (bundleId: string) => {
-    const newSelected = new Set(selectedAppIds);
-    if (newSelected.has(bundleId)) {
-      newSelected.delete(bundleId);
-    } else {
-      newSelected.add(bundleId);
-    }
-    setSelectedAppIds(newSelected);
-  };
+    setSortField(key);
+    setSortDirection('asc');
+  }, [isAppSortField, sortDirection, sortField]);
 
-  const handleSelectAll = () => {
-    const filteredApps = getFilteredAndSortedApps();
-    if (selectedAppIds.size === filteredApps.length) {
-      setSelectedAppIds(new Set());
-    } else {
-      setSelectedAppIds(new Set(filteredApps.map(app => app.bundle_id)));
-    }
-  };
-
-  const getFilteredAndSortedApps = () => {
+  const filteredAndSortedApps = useMemo(() => {
     let filtered = deviceApps.filter(app => {
       if (!showSystemApps && app.auth_type === 'system') return false;
       if (searchQuery.trim()) {
@@ -450,6 +516,17 @@ export default function DevicesPage() {
       return true;
     });
 
+    const deviceOrderIndex = new Map<string, number>();
+    for (let i = 0; i < deviceApps.length; i++) {
+      deviceOrderIndex.set(deviceApps[i].bundle_id, i);
+    }
+
+    const tieBreakByOriginalOrder = (a: AppInfo, b: AppInfo) => {
+      const ai = deviceOrderIndex.get(a.bundle_id) ?? 0;
+      const bi = deviceOrderIndex.get(b.bundle_id) ?? 0;
+      return ai - bi;
+    };
+
     return filtered.sort((a, b) => {
       let comparison = 0;
       if (sortField === 'name') {
@@ -458,25 +535,103 @@ export default function DevicesPage() {
         comparison = a.auth_type.localeCompare(b.auth_type);
       } else if (sortField === 'version') {
         comparison = a.version.localeCompare(b.version);
+      } else if (sortField === 'app_size') {
+        const aHasSize = (a.app_size ?? 0) > 0 || (a.data_size ?? 0) > 0;
+        const bHasSize = (b.app_size ?? 0) > 0 || (b.data_size ?? 0) > 0;
+
+        if (aHasSize !== bHasSize) {
+          return aHasSize ? -1 : 1;
+        }
+
+        if (!aHasSize && !bHasSize) {
+          return tieBreakByOriginalOrder(a, b);
+        }
+
+        const aTotal = (a.app_size ?? 0) + (a.data_size ?? 0);
+        const bTotal = (b.app_size ?? 0) + (b.data_size ?? 0);
+        const base = aTotal - bTotal;
+        const sizedComparison = sortDirection === 'asc' ? base : -base;
+        return sizedComparison === 0 ? tieBreakByOriginalOrder(a, b) : sizedComparison;
+      }
+
+      if (comparison === 0) {
+        comparison = tieBreakByOriginalOrder(a, b);
       }
       return sortDirection === 'asc' ? comparison : -comparison;
     });
-  };
+  }, [deviceApps, showSystemApps, searchQuery, sortField, sortDirection]);
 
-  const handleUninstallApp = (bundleId: string, appName: string) => {
+  const handleSelectApp = useCallback((bundleId: string, ctrlKey: boolean = false) => {
+    if (ctrlKey) {
+      // Ctrl pressed: toggle selection (multi-select)
+      const newSelected = new Set(selectedAppIds);
+      if (newSelected.has(bundleId)) {
+        newSelected.delete(bundleId);
+      } else {
+        newSelected.add(bundleId);
+      }
+      setSelectedAppIds(newSelected);
+    } else {
+      // No Ctrl: single selection (replace all)
+      if (selectedAppIds.has(bundleId) && selectedAppIds.size === 1) {
+        // Clicking already selected item: deselect
+        setSelectedAppIds(new Set());
+      } else {
+        // Select only this item
+        setSelectedAppIds(new Set([bundleId]));
+      }
+    }
+  }, [selectedAppIds]);
+
+  const handleSelectAll = useCallback(() => {
+    if (selectedAppIds.size === filteredAndSortedApps.length) {
+      setSelectedAppIds(new Set());
+    } else {
+      setSelectedAppIds(new Set(filteredAndSortedApps.map(app => app.bundle_id)));
+    }
+  }, [filteredAndSortedApps, selectedAppIds.size]);
+
+  const handleUninstallApp = useCallback((bundleId: string, appName: string) => {
     setAppToUninstall({ bundleId, appName });
     setShowUninstallConfirm(true);
-  };
+  }, []);
 
   const confirmUninstallApp = async () => {
     if (!selectedDevice || !appToUninstall) return;
 
     try {
       showToast(t("devices.uninstalling"), "info");
-      const response = await goServiceClient.uninstallApp(selectedDevice.udid, appToUninstall.bundleId);
-      console.log("Uninstall task started:", response);
+      await useInstallStore.getState().startUninstall(selectedDevice.udid, appToUninstall.bundleId, appToUninstall.appName);
+      
+      // Remove from selection if it was selected
+      setSelectedAppIds(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(appToUninstall.bundleId);
+        return newSet;
+      });
     } catch (error: any) {
       showError(t("devices.uninstallFailed"), error.toString());
+    }
+  };
+
+  const handleBatchUninstall = () => {
+    setShowBatchUninstallConfirm(true);
+  };
+
+  const confirmBatchUninstall = async () => {
+    if (!selectedDevice) return;
+
+    try {
+      const appsToUninstall = filteredAndSortedApps.filter(app => selectedAppIds.has(app.bundle_id));
+      for (const app of appsToUninstall) {
+        await useInstallStore.getState().startUninstall(selectedDevice.udid, app.bundle_id, app.name || app.bundle_id);
+      }
+      setSelectedAppIds(new Set());
+      showToast(t("devices.uninstallSuccess"), "info");
+    } catch (error: any) {
+      showError(t("devices.uninstallFailed"), error.toString());
+    } finally {
+      setShowBatchUninstallConfirm(false);
     }
   };
 
@@ -506,11 +661,24 @@ export default function DevicesPage() {
     }
   };
 
-  const getAuthTypeBadge = (authType: string) => {
+  const getAuthTypeBadge = useCallback((app: AppInfo) => {
+    const authType = app.auth_type;
+    if (app.is_shared_library || authType === "shared_library") {
+      return (
+        <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded text-[10px] font-medium">
+          <Users size={10} />
+          <span>{t("devices.sharedLibrary")}</span>
+        </span>
+      );
+    }
+
     switch (authType) {
       case "apple_store":
         return (
-          <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 bg-green-100 text-green-700 rounded text-[10px] font-medium">
+          <span
+            className="inline-flex items-center space-x-1 px-1.5 py-0.5 bg-green-100 text-green-700 rounded text-[10px] font-medium"
+            title={app.purchaser_apple_id ? t("devices.purchasedBy", { email: app.purchaser_apple_id }) : undefined}
+          >
             <ShieldCheck size={10} />
             <span>{t("devices.authType.appleStore")}</span>
           </span>
@@ -551,7 +719,7 @@ export default function DevicesPage() {
           </span>
         );
     }
-  };
+  }, [t]);
 
   const handleCopyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text).then(() => {
@@ -567,7 +735,7 @@ export default function DevicesPage() {
     if (target.closest('button') || target.closest('input[type="checkbox"]')) {
       return;
     }
-    handleSelectApp(bundleId);
+    handleSelectApp(bundleId, e.ctrlKey || e.metaKey);
   };
 
   const handleContextMenu = (e: React.MouseEvent, app: AppInfo) => {
@@ -583,7 +751,16 @@ export default function DevicesPage() {
 
   const handleContextMenuUninstall = () => {
     if (contextMenuApp) {
-      handleUninstallApp(contextMenuApp.bundle_id, contextMenuApp.name);
+      if (contextMenuApp.is_shared_library) {
+        showToast(t("devices.cannotUninstallSharedLibrary"), "info");
+        closeContextMenu();
+        return;
+      }
+      if (selectedAppIds.has(contextMenuApp.bundle_id) && selectedAppIds.size > 1) {
+        handleBatchUninstall();
+      } else {
+        handleUninstallApp(contextMenuApp.bundle_id, contextMenuApp.name);
+      }
     }
     closeContextMenu();
   };
@@ -595,8 +772,9 @@ export default function DevicesPage() {
     closeContextMenu();
   };
 
-  const formatSize = (bytes?: number): string => {
-    if (!bytes) return '-';
+  const formatSize = useCallback((bytes?: number): string => {
+    if (bytes === undefined || bytes === null || Number.isNaN(bytes)) return '-';
+    if (bytes <= 0) return '0 B';
     const kb = bytes / 1024;
     const mb = kb / 1024;
     const gb = mb / 1024;
@@ -605,67 +783,148 @@ export default function DevicesPage() {
     if (mb >= 1) return `${mb.toFixed(2)} MB`;
     if (kb >= 1) return `${kb.toFixed(2)} KB`;
     return `${bytes} B`;
-  };
+  }, []);
 
-  const columns: DataTableColumn<AppInfo>[] = [
+  // Shared-library rows are synthetic "shared-group:" entries; resolve the
+  // member apps from the real app list so we can show their names and icons.
+  const getSharedLibraryMembers = useCallback((app: AppInfo) => {
+    const memberBundleIds = app.shared_by_bundle_ids ?? [];
+    return memberBundleIds.map(bundleId => {
+      const matched = deviceApps.find(entry => entry.bundle_id === bundleId);
+      return {
+        bundle_id: bundleId,
+        name: matched?.name || bundleId,
+        icon: appIcons[bundleId],
+      };
+    });
+  }, [deviceApps, appIcons]);
+
+  const formatSharedLibraryTitle = useCallback((names: string[], withEllipsis: boolean) => {
+    const maxVisibleNames = 2;
+    const visibleNames = names.slice(0, maxVisibleNames);
+    const joinedNames = visibleNames.join(", ");
+    return (withEllipsis && names.length > maxVisibleNames)
+      ? t("devices.sharedLibraryOfEtc", { names: joinedNames })
+      : t("devices.sharedLibraryOf", { names: joinedNames });
+  }, [t]);
+
+  const columns: DataTableColumn<AppInfo>[] = useMemo(() => [
     {
       key: 'name',
-      header: (
-        <button
-          onClick={() => handleSort('name')}
-          className="text-left hover:text-primary-600 transition-colors flex items-center space-x-1 whitespace-nowrap w-full"
-        >
-          <span>{t("devices.appName")}</span>
-          {sortField === 'name' && (
-            <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
-          )}
-        </button>
-      ),
-      width: 'minmax(80px, 1fr)',
+      header: t("devices.appName"),
+      width: 'minmax(120px, 1fr)',
       align: 'left',
       sortable: true,
+      minWidth: 120,
+      scalePriority: true,
       render: (app) => (
         <div className="flex items-center space-x-3 min-w-0">
-          <div className="w-8 h-8 rounded-lg overflow-hidden bg-gray-100 flex-shrink-0 shadow-sm">
-            {app.icon_data || appIcons[app.bundle_id] ? (
-              <img
-                src={`data:image/png;base64,${
-                  app.icon_data || appIcons[app.bundle_id]
-                }`}
-                alt={app.name || app.bundle_id}
-                className="w-full h-full object-cover"
-              />
+          {app.is_shared_library ? (
+            (() => {
+              const members = getSharedLibraryMembers(app);
+              const visibleMembers = members.slice(0, 3);
+              const hiddenCount = members.length - visibleMembers.length;
+              const fullListTooltip = t("devices.sharedLibraryOf", {
+                names: members.map(member => member.name).join(", "),
+              });
+              return (
+                <div
+                  className="flex items-center -space-x-1.5 flex-shrink-0"
+                  title={members.length > 0 ? fullListTooltip : undefined}
+                >
+                  {visibleMembers.map(member => (
+                    <div
+                      key={member.bundle_id}
+                      className="w-7 h-7 rounded-lg overflow-hidden bg-gray-100 ring-2 ring-white shadow-sm"
+                    >
+                      {member.icon ? (
+                        <img
+                          src={`data:image/png;base64,${member.icon}`}
+                          alt={member.name}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-primary-400 to-primary-600">
+                          <Package className="text-white" size={14} />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {hiddenCount > 0 && (
+                    <div className="w-7 h-7 rounded-lg bg-gray-200 ring-2 ring-white shadow-sm flex items-center justify-center text-[10px] font-semibold text-gray-600">
+                      +{hiddenCount}
+                    </div>
+                  )}
+                </div>
+              );
+            })()
+          ) : (
+            <div className="w-8 h-8 rounded-lg overflow-hidden bg-gray-100 flex-shrink-0 shadow-sm">
+              {app.icon_data || appIcons[app.bundle_id] ? (
+                <img
+                  src={`data:image/png;base64,${
+                    app.icon_data || appIcons[app.bundle_id]
+                  }`}
+                  alt={app.name || app.bundle_id}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-primary-400 to-primary-600">
+                  <Package className="text-white" size={16} />
+                </div>
+              )}
+            </div>
+          )}
+          <div className="min-w-0">
+            {app.is_shared_library ? (
+              (() => {
+                const members = getSharedLibraryMembers(app);
+                const memberNames = members.map(member => member.name);
+                const fullListTooltip = t("devices.sharedLibraryOf", {
+                  names: memberNames.join(", "),
+                });
+                return memberNames.length > 0 ? (
+                  <p
+                    className="text-sm font-medium text-gray-900 truncate leading-tight min-w-0"
+                    title={fullListTooltip}
+                  >
+                    {formatSharedLibraryTitle(memberNames, true)}
+                  </p>
+                ) : (
+                  <p className="text-sm font-medium text-gray-900 truncate leading-tight min-w-0">
+                    {t("devices.sharedLibrary")}
+                  </p>
+                );
+              })()
             ) : (
-              <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-primary-400 to-primary-600">
-                <Package className="text-white" size={16} />
-              </div>
+              <p className="text-sm font-medium text-gray-900 truncate leading-tight min-w-0">
+                {app.name || app.bundle_id}
+              </p>
+            )}
+            {app.is_shared_library && (
+              <p className="text-[10px] text-gray-500 truncate leading-tight">
+                {t("devices.sharedLibrarySubtitle")}
+              </p>
+            )}
+            {!app.is_shared_library && app.auth_type === "apple_store" && app.purchaser_apple_id && (
+              <p className="text-[10px] text-gray-500 truncate leading-tight" title={app.purchaser_apple_id}>
+                {t("devices.purchasedBy", { email: app.purchaser_apple_id })}
+              </p>
             )}
           </div>
-          <p className="text-sm font-medium text-gray-900 truncate leading-tight min-w-0">
-            {app.name || app.bundle_id}
-          </p>
         </div>
       ),
     },
     {
       key: 'auth_type',
-      header: (
-        <button
-          onClick={() => handleSort('auth_type')}
-          className="text-center hover:text-primary-600 transition-colors flex items-center justify-center space-x-1 whitespace-nowrap w-full"
-        >
-          <span>{t("devices.authType.title")}</span>
-          {sortField === 'auth_type' && (
-            <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
-          )}
-        </button>
-      ),
-      width: 'minmax(80px, 120px)',
+      header: t("devices.authType.title"),
+      width: 'minmax(110px, 130px)',
       align: 'center',
       sortable: true,
+      minWidth: 110,
       render: (app) => {
         const runningTask = uninstallTasks.find(
-          task => task.bundle_id === app.bundle_id && 
+          task => task.data?.bundle_id === app.bundle_id && 
                   (task.status === "started" || task.status === "progress")
         );
         
@@ -678,25 +937,16 @@ export default function DevicesPage() {
           );
         }
         
-        return getAuthTypeBadge(app.auth_type);
+        return getAuthTypeBadge(app);
       },
     },
     {
       key: 'version',
-      header: (
-        <button
-          onClick={() => handleSort('version')}
-          className="text-center hover:text-primary-600 transition-colors flex items-center justify-center space-x-1 whitespace-nowrap w-full"
-        >
-          <span>{t("common.version")}</span>
-          {sortField === 'version' && (
-            <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
-          )}
-        </button>
-      ),
-      width: 'minmax(70px, 90px)',
+      header: t("common.version"),
+      width: 'minmax(80px, 100px)',
       align: 'center',
       sortable: true,
+      minWidth: 80,
       render: (app) => (
         <span className="text-xs text-gray-600">
           {app.version}
@@ -706,52 +956,79 @@ export default function DevicesPage() {
     {
       key: 'app_size',
       header: t("devices.appSize"),
-      width: 'minmax(70px, 90px)',
+      width: 'minmax(80px, 100px)',
       align: 'center',
-      render: (app) => (
-        <div className="flex flex-col items-center justify-center">
-          {app.app_size !== undefined && app.app_size > 0 ? (
-            <>
-              <span className="text-xs text-gray-700 font-medium">
-                {formatSize(app.app_size)}
-              </span>
-              {app.data_size && app.data_size > 0 && (
-                <span className="text-[10px] text-gray-400">
-                  +{formatSize(app.data_size)}
-                </span>
-              )}
-            </>
-          ) : (
+      sortable: true,
+      minWidth: 80,
+      render: (app) => {
+        const appSize = app.app_size ?? 0;
+        const dataSize = app.data_size ?? 0;
+        const totalSize = appSize + dataSize;
+        const sizeMeasured = app.size_measured === true;
+        const hasMeaningfulSize = totalSize > 0;
+        const isSharedLibrary = !!app.is_shared_library || app.auth_type === "shared_library";
+
+        if (!sizeMeasured) {
+          return (
             <span className="text-xs text-gray-400 italic">
               {t("common.calculating")}
             </span>
-          )}
-        </div>
-      ),
+          );
+        }
+
+        const tooltipLines = isSharedLibrary
+          ? [`${t("devices.sharedLibrary")}: ${formatSize(dataSize || totalSize)}`]
+          : [
+              `${t("devices.appSizeFull")}: ${formatSize(appSize)}`,
+              `${t("devices.dataSize")}: ${formatSize(dataSize)}`,
+            ];
+
+        return (
+          <div
+            className="flex flex-col items-center justify-center relative cursor-default"
+            title={hasMeaningfulSize ? tooltipLines.join("\n") : undefined}
+          >
+            <span className="text-xs text-gray-700 font-medium">
+              {hasMeaningfulSize ? formatSize(isSharedLibrary ? (dataSize || totalSize) : totalSize) : "-"}
+            </span>
+          </div>
+        );
+      },
     },
     {
       key: 'actions',
       header: t("common.actions"),
-      width: 'minmax(85px, 110px)',
-      align: 'right',
+      width: 'minmax(160px, max-content)',
+      align: 'center',
+      minWidth: 160,
       render: (app) => (
-        <div className="flex justify-end space-x-2">
-          <button
-            onClick={() => setSelectedAppForDetails(app)}
-            className="px-3 py-1 text-primary-600 bg-white border border-primary-600 rounded hover:bg-primary-50 transition-colors text-xs font-medium whitespace-nowrap"
-          >
-            {t("devices.details")}
-          </button>
-          <button
-            onClick={() => handleUninstallApp(app.bundle_id, app.name || app.bundle_id)}
-            className="px-3 py-1 text-red-600 bg-white border border-red-600 rounded hover:bg-red-50 transition-colors text-xs font-medium whitespace-nowrap"
-          >
-            {t("devices.uninstall")}
-          </button>
+        <div className="flex justify-center space-x-2">
+          {!app.is_shared_library && (
+            <Button3D
+              variant="secondary"
+              size="sm"
+              onClick={() => setSelectedAppForDetails(app)}
+            >
+              {t("devices.details")}
+            </Button3D>
+          )}
+          {app.is_shared_library ? (
+            <span className="text-[10px] text-gray-400 px-2 py-1" title={t("devices.cannotUninstallSharedLibrary")}>
+              {t("devices.cannotUninstallSharedLibrary")}
+            </span>
+          ) : (
+            <Button3D
+              variant="danger"
+              size="sm"
+              onClick={() => handleUninstallApp(app.bundle_id, app.name || app.bundle_id)}
+            >
+              {t("devices.uninstall")}
+            </Button3D>
+          )}
         </div>
       ),
     },
-  ];
+  ], [appIcons, formatSize, formatSharedLibraryTitle, getAuthTypeBadge, getSharedLibraryMembers, handleUninstallApp, t, uninstallTasks]);
 
   const getDeviceImageUrl = (device: DeviceInfo): string | null => {
     if (!device.product_type || !device.color) {
@@ -762,6 +1039,70 @@ export default function DevicesPage() {
 
   const handleDeviceImageError = (udid: string) => {
     setDeviceImageError(prev => ({ ...prev, [udid]: true }));
+  };
+
+  const getDisplayStorageBytes = (device: DeviceInfo): number | null => {
+    const storageInfo = device.storage_info;
+    if (!storageInfo) return null;
+    // Prefer nominal disk capacity (e.g. 256GB). Data partition is smaller and
+    // should not be used for the capacity badge.
+    return storageInfo.total_disk_capacity || storageInfo.total_data_capacity || null;
+  };
+
+  const getStorageCapacity = (device: DeviceInfo): string | null => {
+    const totalBytes = getDisplayStorageBytes(device);
+    if (!totalBytes) return null;
+    const totalGB = totalBytes / (1000 * 1000 * 1000);
+    const tiers = [32, 64, 128, 256, 512, 1024, 2048];
+    for (const tier of tiers) {
+      if (totalGB <= tier) {
+        return tier >= 1024 ? `${tier / 1024}T` : `${tier}G`;
+      }
+    }
+    return tiers[tiers.length - 1] >= 1024 ? `${tiers[tiers.length - 1] / 1024}T` : `${tiers[tiers.length - 1]}G`;
+  };
+
+  const getConnectionTypeLabel = (device: DeviceInfo): string => {
+    switch ((device.connection_type || "").toLowerCase()) {
+      case "usb":
+        return t("devices.connectionUsb");
+      case "network":
+        return t("devices.connectionNetwork");
+      default:
+        return t("devices.connectionUnknown");
+    }
+  };
+
+  const renderConnectionBadge = (device: DeviceInfo, compact: boolean = false) => {
+    const connectionType = (device.connection_type || "unknown").toLowerCase();
+    const isNetwork = connectionType === "network";
+    const isUsb = connectionType === "usb";
+    const Icon = isNetwork ? Wifi : Usb;
+    const label = getConnectionTypeLabel(device);
+
+    return (
+      <span
+        className={`inline-flex items-center gap-1 rounded-full border font-medium ${
+          compact ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-0.5 text-xs"
+        } ${
+          isNetwork
+            ? "bg-sky-50 text-sky-700 border-sky-200"
+            : isUsb
+              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+              : "bg-gray-50 text-gray-600 border-gray-200"
+        }`}
+        title={
+          isNetwork
+            ? t("devices.connectionNetworkTooltip")
+            : isUsb
+              ? t("devices.connectionUsbTooltip")
+              : label
+        }
+      >
+        <Icon size={compact ? 10 : 12} />
+        <span>{label}</span>
+      </span>
+    );
   };
 
   const handleCopyDeviceName = () => {
@@ -783,11 +1124,12 @@ export default function DevicesPage() {
     if (!selectedDevice) return;
     
     const deviceInfo = [
-      getDeviceModelName(selectedDevice.product_type),
       (() => {
+        const modelName = getDeviceModelName(selectedDevice.product_type);
         const colorName = getDeviceColorName(selectedDevice.product_type, selectedDevice.color, selectedDevice.enclosure_color);
-        return colorName || '';
+        return colorName ? `${modelName} ${colorName}` : modelName;
       })(),
+      getStorageCapacity(selectedDevice),
       `iOS ${selectedDevice.version}`
     ].filter(Boolean).join(' | ');
     
@@ -813,7 +1155,8 @@ export default function DevicesPage() {
 
   return (
     <>
-    <div ref={dropZoneRef} className="max-w-7xl mx-auto relative">
+    <div className="h-full overflow-auto scrollbar-thin p-12">
+      <div ref={dropZoneRef} className="max-w-7xl mx-auto relative">
       {connectedDevices.length === 0 ? (
         <div className="flex items-center justify-center min-h-[calc(100vh-200px)]">
           <div className="text-center">
@@ -849,14 +1192,15 @@ export default function DevicesPage() {
         </div>
       ) : (
         <>
-          <div className="mb-8 flex items-center justify-between">
-            <div>
-              <h2 className="text-3xl font-bold text-gray-900 mb-2">
-                {t("devices.title")}
-              </h2>
-              <p className="text-gray-500">{t("devices.subtitle")}</p>
-            </div>
-            <button
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-3xl font-bold text-gray-900 mb-2">
+                  {t("devices.title")}
+                </h2>
+                <p className="text-gray-500">{t("devices.subtitle")}</p>
+              </div>
+              <button
               onClick={() => refreshDevices(true)}
               disabled={isRefreshing}
               className="inline-flex items-center space-x-2 px-4 py-2 text-gray-700 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-all disabled:opacity-50"
@@ -875,11 +1219,12 @@ export default function DevicesPage() {
                   size={20}
                 />
               </div>
-              <span>{refreshCompleted ? t("devices.refreshed") : t("devices.refresh")}</span>
-            </button>
+                <span>{refreshCompleted ? t("devices.refreshed") : t("devices.refresh")}</span>
+              </button>
+            </div>
           </div>
 
-          <div className="bg-white rounded-lg border border-gray-200 mb-8 shadow-sm overflow-hidden">
+          <div className="bg-white rounded-lg border border-gray-200 mb-8 shadow-sm">
             <div className="p-6">
               {selectedDevice && (
                 <div className="flex items-center justify-between">
@@ -908,19 +1253,20 @@ export default function DevicesPage() {
                       })()}
                     </div>
                     <div className="flex-1">
-                      <div 
-                        className="flex items-center mb-1 group/name"
-                        onMouseEnter={() => setHoveringDeviceName(true)}
-                        onMouseLeave={() => setHoveringDeviceName(false)}
-                      >
+                      <div className="flex items-center mb-1">
                         <h3 
                           onClick={handleCopyDeviceName}
+                          onMouseEnter={() => setHoveringDeviceName(true)}
+                          onMouseLeave={() => setHoveringDeviceName(false)}
                           className={`font-semibold text-lg cursor-pointer transition-colors ${
                             hoveringDeviceName || copiedDeviceName ? 'text-primary-600' : 'text-gray-900'
                           }`}
                         >
                           {selectedDevice.name}
                         </h3>
+                        <div className="ml-2 flex-shrink-0">
+                          {renderConnectionBadge(selectedDevice)}
+                        </div>
                         <div className="relative ml-1.5 h-5 flex items-center min-w-[80px]">
                           <div className={`absolute left-0 flex items-center gap-1 text-green-600 text-sm whitespace-nowrap transition-all duration-300 ${
                             copiedDeviceName ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'
@@ -939,24 +1285,28 @@ export default function DevicesPage() {
                           </div>
                         </div>
                       </div>
-                      <div 
-                        className="flex items-center group/info"
-                        onMouseEnter={() => setHoveringDeviceInfo(true)}
-                        onMouseLeave={() => setHoveringDeviceInfo(false)}
-                      >
+                      <div className="flex items-center">
                         <p 
                           onClick={handleCopyDeviceInfo}
+                          onMouseEnter={() => setHoveringDeviceInfo(true)}
+                          onMouseLeave={() => setHoveringDeviceInfo(false)}
                           className={`text-sm flex items-center space-x-2 cursor-pointer transition-colors ${
                             hoveringDeviceInfo || copiedDeviceInfo ? 'text-primary-600' : 'text-gray-500'
                           }`}
                         >
-                          <span>{getDeviceModelName(selectedDevice.product_type)}</span>
+                          <span>
+                            {getDeviceModelName(selectedDevice.product_type)}
+                            {(() => {
+                              const colorName = getDeviceColorName(selectedDevice.product_type, selectedDevice.color, selectedDevice.enclosure_color);
+                              return colorName ? ` ${colorName}` : '';
+                            })()}
+                          </span>
                           {(() => {
-                            const colorName = getDeviceColorName(selectedDevice.product_type, selectedDevice.color, selectedDevice.enclosure_color);
-                            return colorName ? (
+                            const storageCapacity = getStorageCapacity(selectedDevice);
+                            return storageCapacity ? (
                               <>
                                 <span className={hoveringDeviceInfo || copiedDeviceInfo ? 'text-primary-400' : 'text-gray-400'}>|</span>
-                                <span>{colorName}</span>
+                                <span>{storageCapacity}</span>
                               </>
                             ) : null;
                           })()}
@@ -984,14 +1334,14 @@ export default function DevicesPage() {
                     </div>
                   </div>
                   <div className="flex items-center space-x-2">
-                    <button
+                    <Button3D
+                      variant="secondary"
+                      size="md"
                       onClick={() => setShowDeviceDetails(true)}
-                      className="px-3 py-2 text-gray-600 hover:text-primary-600 hover:bg-gray-50 rounded-lg transition-colors flex items-center space-x-1"
-                      title={t("deviceDetails.title")}
                     >
                       <InfoIcon size={18} />
-                      <span className="text-sm">{t("devices.details")}</span>
-                    </button>
+                      <span>{t("devices.details")}</span>
+                    </Button3D>
                     {connectedDevices.length > 1 && (
                       <Menu as="div" className="relative">
                         <Menu.Button className="px-3 py-2 text-gray-600 hover:text-primary-600 hover:bg-gray-50 rounded-lg transition-colors flex items-center space-x-1">
@@ -1006,64 +1356,95 @@ export default function DevicesPage() {
                           leaveFrom="transform opacity-100 scale-100"
                           leaveTo="transform opacity-0 scale-95"
                         >
-                          <Menu.Items className="absolute right-0 mt-2 w-72 origin-top-right bg-white rounded-lg shadow-lg border border-gray-200 focus:outline-none z-20 divide-y divide-gray-100">
-                {connectedDevices.map((device) => (
-                              <Menu.Item key={device.udid}>
-                                {({ active }) => (
-                  <button
-                    onClick={() => handleSelectDevice(device)}
-                                    className={`w-full text-left px-4 py-3 transition-colors ${
-                                      active ? 'bg-gray-50' : ''
-                                    } ${selectedDevice?.udid === device.udid ? 'bg-primary-50' : ''}`}
-                  >
-                    <div className="flex items-center space-x-3">
-                      <div className="w-6 h-6 flex items-center justify-center flex-shrink-0 overflow-hidden">
-                        {(() => {
-                          const imageUrl = getDeviceImageUrl(device);
-                          const hasError = deviceImageError[device.udid];
-                          
-                          if (imageUrl && !hasError) {
-                            return (
-                              <img
-                                src={imageUrl}
-                                alt={device.name}
-                                className="w-full h-full object-contain scale-150"
-                                onError={() => handleDeviceImageError(device.udid)}
-                              />
-                            );
-                          }
-                          
-                          return (
-                            <Smartphone
-                              className={selectedDevice?.udid === device.udid ? "text-primary-600" : "text-gray-400"}
-                              size={18}
-                            />
-                          );
-                        })()}
-                      </div>
-                                      <div className="flex-1 min-w-0">
-                                        <p className={`text-sm font-medium truncate ${
-                          selectedDevice?.udid === device.udid ? "text-primary-600" : "text-gray-900"
-                        }`}>
-                          {device.name}
-                        </p>
-                                        <p className="text-xs text-gray-500 truncate">
-                                          {getDeviceModelName(device.product_type)}
+                          <Menu.Items className="absolute right-0 mt-2 w-96 origin-top-right bg-white rounded-xl shadow-xl border border-gray-200 focus:outline-none z-20 overflow-hidden max-h-[480px] overflow-y-auto">
+                            <div className="p-2 space-y-1">
+                              {connectedDevices.map((device) => (
+                                <Menu.Item key={device.udid}>
+                                  {({ active }) => (
+                                    <button
+                                      onClick={() => handleSelectDevice(device)}
+                                      className={`w-full text-left p-3 rounded-lg transition-colors ${
+                                        selectedDevice?.udid === device.udid 
+                                          ? 'bg-primary-50 ring-2 ring-primary-500 ring-inset' 
+                                          : active ? 'bg-gray-50' : ''
+                                      }`}
+                                    >
+                                      <div className="flex items-center space-x-4">
+                                        <div className="w-16 h-16 flex items-center justify-center flex-shrink-0 overflow-hidden">
                                           {(() => {
-                                            const colorName = getDeviceColorName(device.product_type, device.color, device.enclosure_color);
-                                            return colorName ? ` | ${colorName}` : '';
+                                            const imageUrl = getDeviceImageUrl(device);
+                                            const hasError = deviceImageError[device.udid];
+                                            
+                                            if (imageUrl && !hasError) {
+                                              return (
+                                                <img
+                                                  src={imageUrl}
+                                                  alt={device.name}
+                                                  className="w-full h-full object-contain scale-150"
+                                                  onError={() => handleDeviceImageError(device.udid)}
+                                                />
+                                              );
+                                            }
+                                            
+                                            return (
+                                              <div className="w-12 h-12 bg-gradient-to-br from-gray-100 to-gray-200 rounded-xl flex items-center justify-center">
+                                                <Smartphone
+                                                  className={selectedDevice?.udid === device.udid ? "text-primary-600" : "text-gray-400"}
+                                                  size={28}
+                                                />
+                                              </div>
+                                            );
                                           })()}
-                                          {` | iOS ${device.version}`}
-                        </p>
-                      </div>
-                                      {selectedDevice?.udid === device.udid && (
-                                        <Check size={16} className="text-primary-600 flex-shrink-0" />
-                                      )}
-                    </div>
-                  </button>
-                                )}
-                              </Menu.Item>
-                            ))}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                          <p className={`text-base font-semibold truncate mb-1 ${
+                                            selectedDevice?.udid === device.udid ? "text-primary-700" : "text-gray-900"
+                                          }`}>
+                                            {device.name}
+                                          </p>
+                                          <div className="mb-1">
+                                            {renderConnectionBadge(device, true)}
+                                          </div>
+                                          <p className="text-sm text-gray-600 truncate mb-1">
+                                            {getDeviceModelName(device.product_type)}
+                                          </p>
+                                          <div className="flex items-center space-x-2 text-xs text-gray-500">
+                                            {(() => {
+                                              const colorName = getDeviceColorName(device.product_type, device.color, device.enclosure_color);
+                                              return colorName ? (
+                                                <>
+                                                  <span className="px-1.5 py-0.5 bg-gray-100 rounded">
+                                                    {colorName}
+                                                  </span>
+                                                  <span className="text-gray-300">•</span>
+                                                </>
+                                              ) : null;
+                                            })()}
+                                            {(() => {
+                                              const storageCapacity = getStorageCapacity(device);
+                                              return storageCapacity ? (
+                                                <>
+                                                  <span className="px-1.5 py-0.5 bg-gray-100 rounded">
+                                                    {storageCapacity}
+                                                  </span>
+                                                  <span className="text-gray-300">•</span>
+                                                </>
+                                              ) : null;
+                                            })()}
+                                            <span className="px-1.5 py-0.5 bg-gray-100 rounded">
+                                              iOS {device.version}
+                                            </span>
+                                          </div>
+                                        </div>
+                                        {selectedDevice?.udid === device.udid && (
+                                          <Check size={20} className="text-primary-600 flex-shrink-0" />
+                                        )}
+                                      </div>
+                                    </button>
+                                  )}
+                                </Menu.Item>
+                              ))}
+                            </div>
                           </Menu.Items>
                         </Transition>
                       </Menu>
@@ -1079,11 +1460,16 @@ export default function DevicesPage() {
               <div className="mb-6 flex items-center justify-between gap-4">
                 <div className="flex items-center space-x-3 flex-shrink-0">
                   <h3 className="text-xl font-bold text-gray-900">
-                    {t("devices.installedApps")}
+                    {deviceApps.filter(app => showSystemApps || app.auth_type !== 'system').length} {t('common.apps')}
                   </h3>
-                  <span className="text-sm text-gray-500">
-                    {deviceApps.filter(app => showSystemApps || app.auth_type !== 'system').length} {t("common.apps")}
-                  </span>
+                  {selectedAppIds.size > 0 && (
+                    <>
+                      <span className="text-sm text-gray-400">•</span>
+                      <span className="text-sm text-primary-600 font-medium">
+                        {selectedAppIds.size} {t('common.selected')}
+                      </span>
+                    </>
+                  )}
                 </div>
                 <div className="flex items-center space-x-3 flex-shrink min-w-0">
                   <div className="relative min-w-0 flex-shrink">
@@ -1144,23 +1530,16 @@ export default function DevicesPage() {
                       </Menu.Items>
                     </Transition>
                   </Menu>
-                  <button
+                  <Button3D
+                    variant="primary"
+                    size="md"
                     onClick={handleSelectIpaFile}
                     disabled={isInstalling}
-                    className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 transition-colors flex items-center space-x-2 shadow-sm flex-shrink-0 whitespace-nowrap"
+                    loading={isInstalling}
                   >
-                    {isInstalling ? (
-                      <>
-                        <Loader2 className="animate-spin" size={16} />
-                        <span>{t("devices.installing")}</span>
-                      </>
-                    ) : (
-                      <>
-                        <Upload size={16} />
-                        <span>{t("devices.installIpa")}</span>
-                      </>
-                    )}
-                  </button>
+                    {!isInstalling && <Upload size={16} />}
+                    <span>{isInstalling ? t("devices.installing") : t("devices.installIpa")}</span>
+                  </Button3D>
                 </div>
               </div>
 
@@ -1177,9 +1556,7 @@ export default function DevicesPage() {
               )}
 
               {isLoadingApps ? (
-                <div className="flex items-center justify-center py-20">
-                  <Loader2 className="animate-spin text-primary-600" size={40} />
-                </div>
+                <PageLoading message={t("devices.loadingApps")} />
               ) : deviceLockError ? (
                 <div className="bg-white rounded-lg border border-gray-200 p-12 text-center shadow-sm">
                   <Package className="mx-auto text-orange-400 mb-4" size={60} />
@@ -1210,16 +1587,22 @@ export default function DevicesPage() {
                   className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden"
                 >
                   <DataTable
-                    data={getFilteredAndSortedApps()}
+                    key={selectedDevice?.udid}
+                    data={filteredAndSortedApps}
                     columns={columns}
                     keyExtractor={(app) => app.bundle_id}
                     selectedIds={selectedAppIds}
                     onSelect={handleSelectApp}
                     onSelectAll={handleSelectAll}
+                    onSort={handleSort}
+                    sortField={sortField}
+                    sortDirection={sortDirection}
                     onRowClick={(app, e) => handleRowClick(e, app.bundle_id)}
                     onContextMenu={(app, e) => handleContextMenu(e, app)}
                     selectable={true}
                     rowHeight="normal"
+                    disableAnimation={disableTableAnimation}
+                    resizable={true}
                   />
                 </div>
               )}
@@ -1267,10 +1650,14 @@ export default function DevicesPage() {
             className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 transition-colors flex items-center space-x-2"
           >
             <X size={14} />
-            <span>{t("devices.uninstall")}</span>
+            <span>
+              {t("devices.uninstall")}
+              {selectedAppIds.has(contextMenuApp.bundle_id) && selectedAppIds.size > 1 && ` (${t('common.app', { count: selectedAppIds.size })})`}
+            </span>
           </button>
         </div>
       )}
+      </div>
     </div>
 
     {/* Confirm Dialog */}
@@ -1292,6 +1679,18 @@ export default function DevicesPage() {
       type="danger"
     />
 
+    {/* Batch Uninstall Confirm Dialog */}
+    <ConfirmDialog
+      isOpen={showBatchUninstallConfirm}
+      title={t("devices.batchUninstall")}
+      message={t("devices.batchUninstallConfirm", { count: selectedAppIds.size })}
+      confirmText={t("devices.uninstall")}
+      cancelText={t("common.cancel")}
+      onConfirm={confirmBatchUninstall}
+      onCancel={() => setShowBatchUninstallConfirm(false)}
+      type="danger"
+    />
+
     {/* IPA Preview Dialog */}
     <IpaPreviewDialog
       filePath={ipaPreviewPath}
@@ -1301,4 +1700,3 @@ export default function DevicesPage() {
     </>
   );
 }
-
