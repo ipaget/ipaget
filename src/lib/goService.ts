@@ -1,6 +1,36 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export class TokenExpiredError extends Error {
+  constructor(message: string = "password token expired") {
+    super(message);
+    this.name = "TokenExpiredError";
+  }
+}
+
 let serviceUrl: string | null = null;
+
+// Error message to i18n key mapping
+const ERROR_MESSAGE_TO_KEY: Record<string, string> = {
+  "invalid username or password": "auth.errors.invalidUsernameOrPassword",
+  "enter the correct password": "auth.errors.invalidUsernameOrPassword",
+  "account is disabled": "auth.errors.accountDisabled",
+  "too many attempts": "auth.errors.tooManyAttempts",
+  "network timeout": "auth.errors.networkTimeout",
+  "invalid or expired verification code": "auth.errors.invalidOrExpiredCode",
+  "incorrect verification code": "auth.errors.invalidOrExpiredCode",
+  "failed to get mac address": "auth.errors.failedToGetMacAddress",
+  "apple service error": "auth.errors.appleServiceError",
+};
+
+export function getAuthErrorKey(message: string): string | null {
+  const lowerMessage = message.toLowerCase();
+  for (const [key, value] of Object.entries(ERROR_MESSAGE_TO_KEY)) {
+    if (lowerMessage.includes(key)) {
+      return value;
+    }
+  }
+  return null;
+}
 
 export async function ensureServiceRunning(): Promise<string> {
   if (!serviceUrl) {
@@ -10,7 +40,9 @@ export async function ensureServiceRunning(): Promise<string> {
     }
     serviceUrl = await invoke<string>("get_go_service_url");
   }
-  return serviceUrl;
+  // Prefer IPv4 loopback. "localhost" may resolve to ::1 first on Windows/WebView2,
+  // while the Go service binds 127.0.0.1 in development.
+  return serviceUrl.replace("://localhost", "://127.0.0.1");
 }
 
 export interface StorageInfo {
@@ -50,28 +82,87 @@ export interface DeviceInfo {
   firmware_version: string; // Firmware version like "iBoot-11881.140.96"
   serial_number: string; // Serial number
   imei?: string; // International Mobile Equipment Identity
+  imei2?: string; // International Mobile Equipment Identity 2
   phone_number: string; // Phone number
   ecid?: string; // Exclusive Chip ID (last 16 chars of UDID)
   region_info: string; // Like "CH/A"
   model_number: string; // Like "MLE03"
+  regulatory_model: string; // Like "A2634"
   sales_model: string; // Sales model like "MLE03 CH/A"
   time_zone: string; // Time zone like "Asia/Shanghai"
   activation_state: string; // Activated/Unactivated
   is_paired: boolean; // Device pairing status
   is_jailbroken: boolean; // Jailbreak status
+  connection_type?: "usb" | "network" | "unknown" | string; // How the device is linked to this PC
   cpu_architecture: string; // CPU type
   disk_type?: string; // Storage type
   battery_level: number; // Battery percentage
+  battery_is_charging: boolean; // Battery is actively charging
+  battery_external_connected: boolean; // External power is connected
+  battery_fully_charged: boolean; // Battery is fully charged
   battery_health: number; // Battery health percentage
   battery_cycle_count: number; // Charge cycles
+  battery_watts?: number; // Charging wattage
   manufacture_date: string; // Production date
   warranty_expiration: string; // Warranty expiration
   apple_id_locked: boolean; // Apple ID lock status
   icloud_enabled: boolean; // iCloud status
   wifi_address: string; // WiFi MAC address
+  ethernet_address: string; // Cellular/Ethernet MAC address
   bluetooth_address: string; // Bluetooth MAC address
+  imsi?: string; // International Mobile Subscriber Identity
+  sim_status?: string; // SIM Status
+  sim_tray_status?: string; // SIM Tray Status
+  sim1_info?: string; // SIM 1 Carrier Info
+  sim2_info?: string; // SIM 2 Carrier Info
+  crash_log_count: number; // Number of crash logs
   storage_info?: StorageInfo; // Device storage information
+  hardware_details?: HardwareDetails; // Detailed hardware information
   raw_data?: Record<string, any>; // All raw device data from GetValues
+}
+
+export interface HardwareDetails {
+  // Mainboard & Chip
+  mlb_serial_number?: string; // Main Logic Board serial number
+  hardware_model?: string; // Hardware model (e.g., D17AP)
+  hardware_platform?: string; // Platform (e.g., t8110)
+  chip_id?: number; // Chip ID (e.g., 33040)
+  die_id?: number; // Die ID / Unique Chip ID (ECID)
+  board_id?: number; // Board ID
+  
+  // Baseband & Cellular
+  baseband_version?: string; // Baseband firmware version
+  baseband_chip_id?: number; // Baseband chip ID
+  baseband_cert_id?: number; // Baseband certificate ID
+  baseband_serial_number?: string; // Baseband serial number
+  iccid?: string; // SIM 1 card number
+  iccid2?: string; // SIM 2 card number
+  imsi2?: string; // SIM 2 IMSI
+  meid?: string; // Mobile Equipment Identifier
+  
+  // Sensors
+  ambient_light_sensor?: string; // Ambient light sensor serial
+  proximity_sensor?: string; // Proximity sensor serial (Rosaline)
+  cover_glass_serial?: string; // Cover glass serial number
+  
+  // Battery
+  battery_serial?: string; // Battery serial number
+  battery_manufacturer?: string; // Battery manufacturer data
+  
+  // WiFi & Network
+  wifi_chipset?: string; // WiFi chipset (e.g., 4387)
+  wifi_module_serial?: string; // WiFi module serial number
+  wifi_driver_version?: string; // WiFi driver version
+  wireless_board_serial?: string; // Wireless board serial number
+  
+  // Display
+  display_max_brightness?: number; // Max brightness in nits
+  display_type?: string; // Display type (e.g., OLED)
+  
+  // Other
+  partition_type?: string; // Partition type (e.g., GUID_partition_scheme)
+  apfs_container_uuid?: string; // APFS container UUID
+  boot_session_id?: string; // Boot session ID
 }
 
 export interface AppInfo {
@@ -81,6 +172,10 @@ export interface AppInfo {
   icon_url?: string;
   icon_data?: string;
   auth_type: string; // apple_store, shared, development, unknown, system
+  purchaser_apple_id?: string;
+  is_shared_library?: boolean;
+  shared_group_id?: string;
+  shared_by_bundle_ids?: string[];
   build_machine_os_build?: string;
   cf_bundle_executable?: string;
   signer_identity?: string;
@@ -92,8 +187,69 @@ export interface AppInfo {
   sequence_number?: number;
   app_size?: number; // Static disk usage (app binary) in bytes
   data_size?: number; // Dynamic disk usage (documents) in bytes
+  size_measured?: boolean; // True once disk usage has been queried
   raw_data?: Record<string, any>;
   entitlements_xml?: string;
+}
+
+export interface Certificate {
+  id: string;
+  name: string;
+  type: "p12" | "free_sign";
+  team_id: string;
+  bundle_id: string;
+  created_at: string;
+  expires_at: string;
+  is_default: boolean;
+  is_expired: boolean;
+  days_until_expiry: number;
+  common_name: string;
+  raw_data?: Record<string, any>;
+}
+
+export interface ExportedCertificate {
+  fileName: string;
+  contentType: string;
+  data: Uint8Array;
+}
+
+export function deriveFreeSignBundleId(bundleId: string, teamId: string): string {
+  const trimmedBundleId = bundleId.trim();
+  const trimmedTeamId = teamId.trim();
+  if (!trimmedBundleId || !trimmedTeamId) {
+    return trimmedBundleId;
+  }
+
+  const suffix = `.${trimmedTeamId}`;
+  if (trimmedBundleId.endsWith(suffix)) {
+    return trimmedBundleId;
+  }
+
+  return `${trimmedBundleId}${suffix}`;
+}
+
+export interface ImportP12Request {
+  name: string;
+  p12_data: string; // Base64 encoded
+  provision_data: string; // Base64 encoded
+  password: string;
+  is_default: boolean;
+}
+
+export interface ImportFreeSignRequest {
+  name: string;
+  apple_id: string;
+  password: string;
+  is_default: boolean;
+  anisette_url?: string;
+}
+
+export interface SignIPARequest {
+  ipa_path: string;
+  certificate_id: string;
+  device_udid?: string;
+  output_dir?: string;
+  bundle_id?: string;
 }
 
 export interface DeviceAttachedEvent {
@@ -110,14 +266,6 @@ export interface DeviceDetachedEvent {
   properties?: any;
 }
 
-export interface AppSizeUpdateEvent {
-  type: "app_size_update";
-  udid: string;
-  bundle_id: string;
-  app_size: number;
-  data_size: number;
-}
-
 export interface TaskProgressEvent {
   type: "task_progress";
   task_id: string;
@@ -125,16 +273,12 @@ export interface TaskProgressEvent {
   status: string;
   progress: number;
   message: string;
-  udid?: string;
-  bundle_id?: string;
-  file_path?: string;
   data?: Record<string, any>;
 }
 
 export type WebSocketEvent =
   | DeviceAttachedEvent
   | DeviceDetachedEvent
-  | AppSizeUpdateEvent
   | TaskProgressEvent;
 
 export interface AuthResponse {
@@ -143,12 +287,14 @@ export interface AuthResponse {
   email?: string;
   cookie_file?: string;
   message: string;
+  error_code?: string;
 }
 
 export interface AppSearchResult {
   id: number;
   bundle_id: string;
   name: string;
+  subtitle?: string;
   version: string;
   price: number;
   formatted_price: string;
@@ -185,6 +331,7 @@ export interface AppVersion {
   version_string: string;
   release_date?: string;
   success: boolean;
+  is_loading?: boolean;
   error?: string;
 }
 
@@ -192,8 +339,7 @@ export interface AppVersionHistory {
   bundle_id: string;
   app_name: string;
   latest_version: string;
-  version_identifiers: string[];
-  versions?: AppVersion[];
+  versions: AppVersion[];
 }
 
 export interface AccountInfo {
@@ -209,6 +355,21 @@ export interface IPAInfo {
   minimum_os_version?: string;
   icon_base64?: string;
   file_path: string;
+  certificate_name?: string;
+  certificate_expiry?: string;
+  certificate_status?: string;
+  provision_name?: string;
+  provision_team_id?: string;
+  provision_app_id?: string;
+  has_provision_profile: boolean;
+
+  is_encrypted?: boolean;
+  crypt_id?: number;
+  signer_identity?: string;
+  team_id?: string;
+  organization?: string;
+  purchaser_email?: string;
+  signer_name?: string;
 }
 
 export interface FileItem {
@@ -217,16 +378,67 @@ export interface FileItem {
   is_directory: boolean;
 }
 
-export interface ResourceItem {
-  name: string;
-  type: string;
-  size: number;
+export interface DylibItem {
+  name: string;        // Dylib file name (e.g., "demo.dylib")
+  path: string;        // Full load path (e.g., "@rpath/demo.dylib")
+  enabled: boolean;    // Whether to keep this dylib (disable = remove from Mach-O)
+  is_system: boolean;  // System dylib (e.g., /usr/lib/libSystem.B.dylib)
+  is_injected: boolean; // User-injected dylib (via Tweaks)
+}
+
+export interface FrameworkItem {
+  name: string;    // Framework name (e.g., "CydiaSubstrate.framework")
+  path: string;    // Relative path in .app (e.g., "Frameworks/CydiaSubstrate.framework")
+  enabled: boolean; // Whether to keep this framework (disable = remove from .app)
+}
+
+export interface PluginItem {
+  name: string;       // Plugin name (e.g., "ShareExtension.appex")
+  path: string;       // Relative path in .app (e.g., "PlugIns/ShareExtension.appex")
+  bundle_id: string;  // Plugin bundle identifier
+  is_appex: boolean;  // Whether it's an App Extension (.appex)
+  target_dir: string; // Target directory ("PlugIns" or custom)
+  enabled: boolean;   // Whether to keep this plugin (disable = remove from .app)
 }
 
 export interface IPADetails {
   entitlements_xml: string;
   files: FileItem[];
-  resources: ResourceItem[];
+  dylibs: DylibItem[];     // All dylibs from Mach-O load commands
+  frameworks: FrameworkItem[]; // All frameworks from .app/Frameworks/
+  plugins: PluginItem[];    // All plugins from .app/PlugIns/
+  properties: Record<string, any>;
+}
+
+export type InjectPath = "@executable_path" | "@rpath";
+export type InjectFolder = "/" | "/Frameworks/";
+
+export interface SigningOptions {
+  // Pre Modifications
+  app_name?: string;
+  app_version?: string;
+  app_identifier?: string;
+  
+  // Injection Options
+  inject_path: InjectPath;      // @executable_path or @rpath
+  inject_folder: InjectFolder;  // root (/) or frameworks (/Frameworks/)
+  
+  // File Lists
+  injection_files: string[];      // Array of files (.dylib, .deb) to extract and inject
+  dis_injection_files: string[];  // Mach-O load paths to remove
+  remove_files: string[];         // App files to remove
+  
+  // Options
+  file_sharing: boolean;       // Enable UISupportsDocumentBrowser
+  itunes_file_sharing: boolean; // Enable UIFileSharingEnabled
+  remove_url_scheme: boolean;  // Remove CFBundleURLTypes
+  remove_provisioning: boolean; // Remove embedded.mobileprovision
+}
+
+export interface SimulatedDeviceProfile {
+  id: string;
+  info: DeviceInfo;
+  apps: AppInfo[];
 }
 
 export class GoServiceClient {
@@ -236,6 +448,8 @@ export class GoServiceClient {
   private reconnectTimer: number | null = null;
   private reconnectAttempts: number = 0;
   private shouldReconnect: boolean = false;
+  private connectTimeoutTimer: number | null = null;
+  private readonly connectTimeoutMs: number = 5000;
   private errorCallback: ((error: Error, isWsError: boolean, reconnectAttempts: number) => void) | null = null;
   private statusCallback: ((status: "connected" | "connecting" | "disconnected" | "error", reconnectAttempts: number) => void) | null = null;
 
@@ -243,9 +457,73 @@ export class GoServiceClient {
     this.baseUrl = await ensureServiceRunning();
   }
 
+  async checkHealth(): Promise<{ status: string; ready: boolean; message: string }> {
+    await this.init();
+    try {
+      const response = await fetch(`${this.baseUrl}/health`, {
+        method: "GET",
+        signal: AbortSignal.timeout(2000),
+      });
+      if (!response.ok) {
+        throw new Error(`Health check failed: ${response.status}`);
+      }
+      return await response.json();
+    } catch (error: any) {
+      throw new Error(`Health check failed: ${error.message || "Unknown error"}`);
+    }
+  }
+
+  async waitForServiceReady(maxAttempts: number = 30, intervalMs: number = 200): Promise<void> {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const health = await this.checkHealth();
+        if (health.ready) {
+          console.log(`Go service is ready after ${attempt} attempt(s)`);
+          return;
+        }
+      } catch (error) {
+        // Service not ready yet, continue
+      }
+      
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+      }
+    }
+    
+    throw new Error(`Go service failed to become ready after ${maxAttempts} attempts`);
+  }
+
+  private async handleErrorResponse(response: Response, defaultMessage: string): Promise<never> {
+    try {
+      const error = await response.json();
+      const errorMessage = error.error || defaultMessage;
+      
+      console.log('[handleErrorResponse] Received error message:', errorMessage);
+      const lower = String(errorMessage || '').toLowerCase();
+      // Match variants like "password token expired", "password token is expired", etc.
+      if (/(?:password\s+)?token.*expired/.test(lower)) {
+        console.log('[handleErrorResponse] Throwing TokenExpiredError');
+        throw new TokenExpiredError(errorMessage);
+      }
+      
+      console.log('[handleErrorResponse] Throwing generic Error');
+      throw new Error(errorMessage);
+    } catch (e) {
+      if (e instanceof TokenExpiredError) {
+        throw e; // Re-throw TokenExpiredError
+      }
+      if (e instanceof Error && e.message !== defaultMessage) {
+        throw e; // Re-throw if it's our formatted error
+      }
+      // If JSON parsing fails, use status text
+      throw new Error(`${defaultMessage}: ${response.statusText || response.status}`);
+    }
+  }
+
   async getWebSocketUrl(): Promise<string> {
     await this.init();
-    return this.baseUrl.replace("http://", "ws://").replace("https://", "wss://") + "/ws";
+    const normalizedBaseUrl = this.baseUrl.replace("://localhost", "://127.0.0.1");
+    return normalizedBaseUrl.replace("http://", "ws://").replace("https://", "wss://") + "/ws";
   }
 
   setErrorCallback(callback: (error: Error, isWsError: boolean, reconnectAttempts: number) => void) {
@@ -342,7 +620,13 @@ export class GoServiceClient {
     return result.data || {};
   }
 
-  async installApp(udid: string, ipaPath: string, bundleId?: string, version?: string): Promise<{ task_id: string }> {
+  async installApp(
+    udid: string,
+    ipaPath: string,
+    bundleId?: string,
+    version?: string,
+    certificateId?: string | null,
+  ): Promise<{ task_id: string }> {
     await this.init();
     const response = await fetch(`${this.baseUrl}/device/${udid}/install`, {
       method: "POST",
@@ -353,12 +637,30 @@ export class GoServiceClient {
         ipa_path: ipaPath,
         bundle_id: bundleId,
         version: version,
+        certificate_id: certificateId || undefined,
       }),
     });
     const result = await response.json();
     if (!response.ok) {
       throw new Error(result.error || "Failed to install app");
     }
+    return result.data;
+  }
+
+  async signIPA(req: SignIPARequest): Promise<{ task_id: string }> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/ipa/sign`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(req),
+    });
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to sign IPA");
+      throw new Error("Unreachable");
+    }
+    const result = await response.json();
     return result.data;
   }
 
@@ -418,7 +720,7 @@ export class GoServiceClient {
     }
   }
 
-  async uninstallApp(udid: string, bundleId: string): Promise<void> {
+  async uninstallApp(udid: string, bundleId: string): Promise<{ task_id: string }> {
     await this.init();
     const response = await fetch(
       `${this.baseUrl}/device/${udid}/app/${bundleId}`,
@@ -430,7 +732,9 @@ export class GoServiceClient {
     if (!response.ok) {
       throw new Error(result.error || "Failed to uninstall app");
     }
+    return result.data;
   }
+
 
   connectWebSocket(onEvent: (event: WebSocketEvent) => void) {
     if (!this.eventCallbacks.includes(onEvent)) {
@@ -438,8 +742,18 @@ export class GoServiceClient {
     }
 
     this.shouldReconnect = true;
-    
-    if (!this.ws || this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING) {
+
+    // Also re-init when a previous attempt is stuck in CONNECTING.
+    // Without this, a hung handshake leaves the UI on "connecting" forever
+    // because onclose/onerror never fire and reconnect is never scheduled.
+    const isSocketMissing = !this.ws;
+    const isSocketClosed =
+      !!this.ws &&
+      (this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING);
+    const isSocketStuckConnecting =
+      !!this.ws && this.ws.readyState === WebSocket.CONNECTING && this.connectTimeoutTimer === null;
+
+    if (isSocketMissing || isSocketClosed || isSocketStuckConnecting) {
       this.initWebSocket();
     }
   }
@@ -450,14 +764,35 @@ export class GoServiceClient {
         await this.init();
       }
 
-      const wsUrl = this.baseUrl.replace("http://", "ws://");
+      this.clearConnectTimeout();
+
+      // Drop any previous socket before opening a new one to avoid leaked CONNECTING sockets.
+      if (this.ws) {
+        try {
+          this.ws.onopen = null;
+          this.ws.onmessage = null;
+          this.ws.onerror = null;
+          this.ws.onclose = null;
+          this.ws.close();
+        } catch {
+          // ignore close errors on a half-open socket
+        }
+        this.ws = null;
+      }
+
+      const wsUrl = this.baseUrl
+        .replace("://localhost", "://127.0.0.1")
+        .replace("http://", "ws://")
+        .replace("https://", "wss://");
       console.log(`Connecting to WebSocket: ${wsUrl}/ws (attempt ${this.reconnectAttempts + 1})`);
       
       this.notifyStatus("connecting");
       this.ws = new WebSocket(`${wsUrl}/ws`);
+      this.armConnectTimeout();
 
       this.ws.onopen = () => {
         console.log("WebSocket connected successfully");
+        this.clearConnectTimeout();
         this.reconnectAttempts = 0;
         this.notifyStatus("connected");
         if (this.reconnectTimer) {
@@ -478,6 +813,7 @@ export class GoServiceClient {
 
       this.ws.onerror = (error) => {
         console.error("WebSocket error:", error);
+        this.clearConnectTimeout();
         this.notifyStatus("error");
         // Notify error with current reconnect attempts
         this.notifyError(new Error("WebSocket connection failed"), true);
@@ -485,6 +821,7 @@ export class GoServiceClient {
 
       this.ws.onclose = (event) => {
         console.log(`WebSocket disconnected (code: ${event.code}, reason: ${event.reason})`);
+        this.clearConnectTimeout();
         this.ws = null;
         
         if (event.code !== 1000) {
@@ -498,11 +835,45 @@ export class GoServiceClient {
       };
     } catch (error: any) {
       console.error("Failed to initialize WebSocket:", error);
+      this.clearConnectTimeout();
       this.notifyStatus("error");
       this.notifyError(error instanceof Error ? error : new Error(String(error)), true);
       if (this.shouldReconnect) {
         this.scheduleReconnect();
       }
+    }
+  }
+
+  private armConnectTimeout() {
+    this.clearConnectTimeout();
+    this.connectTimeoutTimer = window.setTimeout(() => {
+      const currentSocket = this.ws;
+      if (!currentSocket || currentSocket.readyState !== WebSocket.CONNECTING) {
+        return;
+      }
+
+      console.warn(
+        `WebSocket handshake timed out after ${this.connectTimeoutMs}ms, forcing reconnect`
+      );
+      this.notifyStatus("error");
+      this.notifyError(new Error("WebSocket connection timed out"), true);
+
+      try {
+        // Force-close a hung CONNECTING socket so onclose can schedule reconnect.
+        currentSocket.close();
+      } catch {
+        this.ws = null;
+        if (this.shouldReconnect) {
+          this.scheduleReconnect();
+        }
+      }
+    }, this.connectTimeoutMs);
+  }
+
+  private clearConnectTimeout() {
+    if (this.connectTimeoutTimer !== null) {
+      clearTimeout(this.connectTimeoutTimer);
+      this.connectTimeoutTimer = null;
     }
   }
 
@@ -532,6 +903,7 @@ export class GoServiceClient {
 
     if (this.eventCallbacks.length === 0) {
       this.shouldReconnect = false;
+      this.clearConnectTimeout();
       
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
@@ -550,17 +922,22 @@ export class GoServiceClient {
 
   async login(email: string, password: string): Promise<AuthResponse> {
     await this.init();
+    const settings = await invoke<any>("get_settings");
+    const anisetteUrl = settings.anisette_url || "";
+    console.log("[GoService] Login - anisette_url from settings:", anisetteUrl);
+    
     const response = await fetch(`${this.baseUrl}/auth/login`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, anisette_url: anisetteUrl }),
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Login failed");
+      await this.handleErrorResponse(response, "Login failed");
+      // The above will throw, so this line is unreachable
+      throw new Error("Unreachable");
     }
     
     return await response.json();
@@ -581,8 +958,9 @@ export class GoServiceClient {
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "2FA verification failed");
+      await this.handleErrorResponse(response, "2FA verification failed");
+      // The above will throw, so this line is unreachable
+      throw new Error("Unreachable");
     }
     
     return await response.json();
@@ -598,8 +976,8 @@ export class GoServiceClient {
     );
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Logout failed");
+      await this.handleErrorResponse(response, "Logout failed");
+      throw new Error("Unreachable");
     }
   }
 
@@ -624,8 +1002,8 @@ export class GoServiceClient {
     );
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to get account info");
+      await this.handleErrorResponse(response, "Failed to get account info");
+      throw new Error("Unreachable");
     }
     
     const result = await response.json();
@@ -639,31 +1017,50 @@ export class GoServiceClient {
     );
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to get country code");
+      await this.handleErrorResponse(response, "Failed to get country code");
+      throw new Error("Unreachable");
     }
     
     const result = await response.json();
     return result.data.country_code;
   }
 
+  async checkLicense(bundleId: string, email: string): Promise<boolean> {
+    await this.init();
+    const params = new URLSearchParams({
+      bundle_id: bundleId,
+      email: email,
+    });
+    const response = await fetch(
+      `${this.baseUrl}/apps/check-license?${params}`
+    );
+    
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to check license");
+      throw new Error("Unreachable");
+    }
+    
+    const result = await response.json();
+    return result.data.has_license;
+  }
+
   async searchApps(
     keyword: string,
-    email: string,
+    countryCode: string,
     limit: number = 10
   ): Promise<AppSearchResult[]> {
     await this.init();
     const params = new URLSearchParams({
       keyword,
-      email,
+      country: countryCode.toLowerCase(),
       limit: limit.toString(),
     });
     
     const response = await fetch(`${this.baseUrl}/apps/search?${params}`);
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Search failed");
+      await this.handleErrorResponse(response, "Search failed");
+      throw new Error("Unreachable");
     }
     
     const result = await response.json();
@@ -680,15 +1077,36 @@ export class GoServiceClient {
     const response = await fetch(`${this.baseUrl}/apps/details?${params}`);
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to get app details");
+      await this.handleErrorResponse(response, "Failed to get app details");
+      throw new Error("Unreachable");
     }
     
     const result = await response.json();
     return result.data;
   }
 
-  async getAppVersionHistory(bundleId: string, email: string): Promise<AppVersionHistory> {
+  async getAppSubtitles(bundleIds: string[], countryCode: string): Promise<Record<string, string>> {
+    await this.init();
+    const params = new URLSearchParams();
+    params.set("country", countryCode.toLowerCase());
+    bundleIds.forEach((bundleId) => {
+      if (bundleId) {
+        params.append("bundle_id", bundleId);
+      }
+    });
+
+    const response = await fetch(`${this.baseUrl}/apps/subtitles?${params}`);
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to get app subtitles");
+      throw new Error("Unreachable");
+    }
+
+    const result = await response.json();
+    return result.data.subtitles || {};
+  }
+
+  async getAppVersionHistory(bundleId: string, email: string): Promise<{ task_id: string }> {
     await this.init();
     const params = new URLSearchParams({
       bundle_id: bundleId,
@@ -698,8 +1116,8 @@ export class GoServiceClient {
     const response = await fetch(`${this.baseUrl}/apps/versions?${params}`);
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to get version history");
+      await this.handleErrorResponse(response, "Failed to get version history");
+      throw new Error("Unreachable");
     }
     
     const result = await response.json();
@@ -725,8 +1143,8 @@ export class GoServiceClient {
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to get version details");
+      await this.handleErrorResponse(response, "Failed to get version details");
+      throw new Error("Unreachable");
     }
     
     const result = await response.json();
@@ -737,7 +1155,8 @@ export class GoServiceClient {
     bundleId: string,
     email: string,
     outputDir: string,
-    appName?: string
+    appName?: string,
+    iconUrl?: string
   ): Promise<{ task_id: string }> {
     await this.init();
     const response = await fetch(`${this.baseUrl}/apps/download`, {
@@ -750,16 +1169,29 @@ export class GoServiceClient {
         email,
         output_dir: outputDir,
         app_name: appName,
+        icon_url: iconUrl,
       }),
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Download failed");
+      await this.handleErrorResponse(response, "Download failed");
+      throw new Error("Unreachable");
     }
     
     const result = await response.json();
     return result.data;
+  }
+
+  async cancelTask(taskId: string): Promise<void> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/tasks/${taskId}/cancel`, {
+      method: "POST",
+    });
+    
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to cancel task");
+      throw new Error("Unreachable");
+    }
   }
 
   async checkPairingStatus(udid: string): Promise<{ is_paired: boolean; waiting_for_trust: boolean; needs_pairing: boolean }> {
@@ -767,8 +1199,8 @@ export class GoServiceClient {
     const response = await fetch(`${url}/device/${udid}/pair-status`);
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to check pairing status");
+      await this.handleErrorResponse(response, "Failed to check pairing status");
+      throw new Error("Unreachable");
     }
     
     return await response.json();
@@ -790,8 +1222,8 @@ export class GoServiceClient {
     }
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to pair device");
+      await this.handleErrorResponse(response, "Failed to pair device");
+      throw new Error("Unreachable");
     }
     
     return { success: true };
@@ -808,15 +1240,15 @@ export class GoServiceClient {
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to parse IPA file");
+      await this.handleErrorResponse(response, "Failed to parse IPA file");
+      throw new Error("Unreachable");
     }
     
     const result = await response.json();
     return result.data;
   }
 
-  async getIpaDetails(filePath: string): Promise<{ task_id: string }> {
+  async getIpaDetails(filePath: string): Promise<IPADetails> {
     await this.init();
     const response = await fetch(`${this.baseUrl}/ipa/details`, {
       method: "POST",
@@ -827,12 +1259,299 @@ export class GoServiceClient {
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || "Failed to get IPA details");
+      await this.handleErrorResponse(response, "Failed to get IPA details");
+      throw new Error("Unreachable");
     }
     
     const result = await response.json();
     return result.data;
+  }
+
+  async extractFileFromIpa(ipaPath: string, filePath: string): Promise<string> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/ipa/extract-file`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ipa_path: ipaPath, file_path: filePath }),
+    });
+    
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to extract file");
+      throw new Error("Unreachable");
+    }
+    
+    const result = await response.json();
+    return result.data.content;
+  }
+
+  async extractFilesFromIpa(ipaPath: string, filePaths: string[], outputDir: string): Promise<string[]> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/ipa/extract-files`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ 
+        ipa_path: ipaPath, 
+        file_paths: filePaths,
+        output_dir: outputDir,
+      }),
+    });
+    
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to extract files");
+      throw new Error("Unreachable");
+    }
+    
+    const result = await response.json();
+    return result.data.files;
+  }
+  
+  // Debug APIs
+  async listSimProfiles(): Promise<SimulatedDeviceProfile[]> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/debug/sim-profiles`);
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to list sim profiles");
+      throw new Error("Unreachable");
+    }
+    const result = await response.json();
+    return result.data || [];
+  }
+
+  async saveSimProfile(profile: SimulatedDeviceProfile): Promise<SimulatedDeviceProfile> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/debug/save-sim-profile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(profile),
+    });
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to save sim profile");
+      throw new Error("Unreachable");
+    }
+    return await response.json();
+  }
+
+  async deleteSimProfile(id: string): Promise<void> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/debug/sim-profiles/${id}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to delete sim profile");
+      throw new Error("Unreachable");
+    }
+  }
+
+  async simulateDevice(info: DeviceInfo, apps: AppInfo[]): Promise<DeviceInfo> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/debug/simulate-device`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ info, apps }),
+    });
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to simulate device");
+      throw new Error("Unreachable");
+    }
+    const result = await response.json();
+    return result.data;
+  }
+
+  async removeSimulatedDevice(udid: string): Promise<void> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/debug/simulated/${udid}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to remove simulated device");
+      throw new Error("Unreachable");
+    }
+  }
+
+  async clearAllSimulatedDevices(): Promise<number> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/debug/clear-simulated`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to clear all simulated devices");
+      throw new Error("Unreachable");
+    }
+    const result = await response.json();
+    return result.data;
+  }
+
+  async generateRandomDevice(): Promise<SimulatedDeviceProfile> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/debug/generate-random-device`);
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to generate random device");
+      throw new Error("Unreachable");
+    }
+    const result = await response.json();
+    return result.data;
+  }
+
+  async testTask(): Promise<string> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/debug/test-task`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to start test task");
+      throw new Error("Unreachable");
+    }
+    const result = await response.json();
+    return result.data.task_id;
+  }
+
+  async loadDeviceProfile(udid: string): Promise<SimulatedDeviceProfile> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/debug/load-device-profile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ udid }),
+    });
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to load device profile");
+      throw new Error("Unreachable");
+    }
+    const result = await response.json();
+    return result.data;
+  }
+
+  // Certificate Management
+
+  async listCertificates(): Promise<Certificate[]> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/certs`);
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to list certificates");
+      throw new Error("Unreachable");
+    }
+    const result = await response.json();
+    return result.data;
+  }
+
+  async getCertificate(id: string): Promise<Certificate> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/certs/${id}`);
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to get certificate");
+      throw new Error("Unreachable");
+    }
+    const result = await response.json();
+    return result.data;
+  }
+
+  async exportCertificate(id: string): Promise<ExportedCertificate> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/certs/${id}/export`);
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to export certificate");
+      throw new Error("Unreachable");
+    }
+
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const contentType = response.headers.get("Content-Type") || "application/octet-stream";
+    const fileNameMatch = disposition.match(/filename="?([^\"]+)"?/i);
+    const fileName = fileNameMatch?.[1] || `${id}.p12`;
+    const data = new Uint8Array(await response.arrayBuffer());
+
+    return { fileName, contentType, data };
+  }
+
+  async importP12Certificate(req: ImportP12Request): Promise<Certificate> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/certs/import-p12`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(req),
+    });
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to import P12 certificate");
+      throw new Error("Unreachable");
+    }
+    const result = await response.json();
+    return result.data;
+  }
+
+  async importFreeSignCertificate(req: ImportFreeSignRequest): Promise<Certificate> {
+    await this.init();
+    const settings = await invoke<any>("get_settings");
+    const anisetteUrl = settings.anisette_url || "";
+    console.log("[GoService] ImportFreeSign - anisette_url from settings:", anisetteUrl);
+    
+    const response = await fetch(`${this.baseUrl}/certs/import-free`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ...req, anisette_url: anisetteUrl }),
+    });
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to import free signing certificate");
+      throw new Error("Unreachable");
+    }
+    const result = await response.json();
+    return result.data;
+  }
+
+  async deleteCertificate(id: string): Promise<void> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/certs/${id}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to delete certificate");
+      throw new Error("Unreachable");
+    }
+  }
+
+  async setDefaultCertificate(id: string): Promise<void> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/certs/${id}/set-default`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to set default certificate");
+      throw new Error("Unreachable");
+    }
+  }
+
+  async getCertificateForAppleID(email: string): Promise<Certificate | null> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/certs/apple-id/${encodeURIComponent(email)}`);
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to get certificate for Apple ID");
+      throw new Error("Unreachable");
+    }
+    const result = await response.json();
+    return result.data;
+  }
+
+  async getTopApps(countryCode: string = "cn", limit: number = 20): Promise<AppSearchResult[]> {
+    await this.init();
+    const params = new URLSearchParams({
+      country: countryCode,
+      limit: limit.toString(),
+    });
+    
+    const response = await fetch(`${this.baseUrl}/apps/top?${params}`);
+    
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to get top apps");
+      throw new Error("Unreachable");
+    }
+    
+    const result = await response.json();
+    return result.data.apps || [];
   }
 }
 
@@ -841,4 +1560,3 @@ export const goServiceClient = new GoServiceClient();
 export async function parseIPA(filePath: string): Promise<IPAInfo> {
   return goServiceClient.parseIPA(filePath);
 }
-
