@@ -2,29 +2,30 @@
 
 set -e
 
-echo "Building iPAGet Go Service for production..."
+echo "Building iPAGet Go Service for current platform..."
 
-BINARIES_DIR="../src-tauri/binaries"
+# Resolve directories relative to this script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BINARIES_DIR="$SCRIPT_DIR/../src-tauri/binaries"
 mkdir -p "$BINARIES_DIR"
 
-# Windows x64
-echo "Building for Windows x64..."
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BINARIES_DIR/ipaget-service-x86_64-pc-windows-msvc.exe" .
+# Build current platform only; Go auto-detects OS/ARCH
+export CGO_ENABLED=0
 
-# macOS Intel
-echo "Building for macOS Intel..."
-GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BINARIES_DIR/ipaget-service-x86_64-apple-darwin" .
+OUT="$BINARIES_DIR/ipaget-service"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+    OUT="$BINARIES_DIR/ipaget-service.exe"
+    ;;
+esac
 
-# macOS Apple Silicon
-echo "Building for macOS Apple Silicon..."
-GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BINARIES_DIR/ipaget-service-aarch64-apple-darwin" .
-
-# Linux x64
-echo "Building for Linux x64..."
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BINARIES_DIR/ipaget-service-x86_64-unknown-linux-gnu" .
+echo "Building to $OUT"
+pushd "$SCRIPT_DIR" >/dev/null
+go build -ldflags="-s -w" -o "$OUT" .
+popd >/dev/null
 
 echo ""
 echo "Build complete! Binaries are in: $BINARIES_DIR"
 echo ""
-ls -lh "$BINARIES_DIR"/ipaget-service-*
+ls -lh "$BINARIES_DIR"/ipaget-service*
 

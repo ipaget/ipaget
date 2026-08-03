@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "go run github.com/air-verse/air@latest",
+    "dev": "go run github.com/air-verse/air@v1.62.0",
     "build": "go build -o ./tmp/main main.go"
   }
 }
