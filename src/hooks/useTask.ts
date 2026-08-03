@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
-import { useTaskStore, Task, TaskProgress } from "../store/taskStore";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { useTaskStore, Task } from "../store/taskStore";
 
 export interface TaskOptions {
   onStart?: (taskId: string) => void;
@@ -10,28 +10,47 @@ export interface TaskOptions {
   autoRemoveDelay?: number;
 }
 
-export function useTask(taskType?: string, udid?: string, bundle_id?: string) {
-  const { tasks, addTask, updateTask, getTask, getTasksByType, getTasksByUdidAndBundleId, removeTask } = useTaskStore();
-  const [activeTasks, setActiveTasks] = useState<Task[]>([]);
-
-  useEffect(() => {
-    if (taskType && udid && bundle_id) {
-      setActiveTasks(getTasksByUdidAndBundleId(udid, bundle_id).filter(t => t.type === taskType));
-    } else if (taskType) {
-      setActiveTasks(getTasksByType(taskType));
-    } else if (udid && bundle_id) {
-      setActiveTasks(getTasksByUdidAndBundleId(udid, bundle_id));
-    } else {
-      setActiveTasks(Array.from(tasks.values()));
+// Custom equality function that compares task arrays by content, not reference
+function areTaskArraysEqual(prev: Task[], next: Task[]): boolean {
+  if (prev.length !== next.length) return false;
+  
+  // Compare each task by id and updatedAt timestamp
+  for (let i = 0; i < prev.length; i++) {
+    if (prev[i].id !== next[i].id || prev[i].updatedAt !== next[i].updatedAt) {
+      return false;
     }
-  }, [tasks, taskType, udid, bundle_id]);
+  }
+  
+  return true;
+}
+
+export function useTask(taskType?: string, dataFilter?: (data?: Record<string, any>) => boolean) {
+  const { addTask, getTask, removeTask } = useTaskStore();
+  
+  // Use Zustand selector with custom equality to only re-render when tasks actually change
+  const activeTasks = useTaskStore(
+    state => {
+      const tasksArray = Array.from(state.tasks.values());
+      
+      if (taskType && dataFilter) {
+        return tasksArray.filter(t => t.type === taskType && dataFilter(t.data));
+      } else if (taskType) {
+        return tasksArray.filter(t => t.type === taskType);
+      } else if (dataFilter) {
+        return tasksArray.filter(t => dataFilter(t.data));
+      } else {
+        return tasksArray;
+      }
+    },
+    areTaskArraysEqual
+  );
 
   const createTask = useCallback((
     taskId: string,
     type: string,
-    options?: TaskOptions & { udid?: string; bundle_id?: string; file_path?: string }
+    options?: TaskOptions & { data?: Record<string, any> }
   ) => {
-    addTask(taskId, type, options?.udid, options?.bundle_id, options?.file_path);
+    addTask(taskId, type, options?.data);
     
     if (options?.onStart) {
       options.onStart(taskId);
@@ -40,33 +59,33 @@ export function useTask(taskType?: string, udid?: string, bundle_id?: string) {
     return taskId;
   }, [addTask]);
 
-  const isTaskRunning = useCallback((udid?: string, bundle_id?: string, type?: string) => {
-    if (udid && bundle_id && type) {
+  const isTaskRunning = useCallback((dataFilter?: (data?: Record<string, any>) => boolean, type?: string) => {
+    if (dataFilter && type) {
       return activeTasks.some(
-        task => task.udid === udid && 
-                task.bundle_id === bundle_id && 
-                task.type === type &&
+        task => task.type === type && 
+                dataFilter(task.data) &&
                 (task.status === "started" || task.status === "progress")
       );
     }
     return activeTasks.some(task => task.status === "started" || task.status === "progress");
   }, [activeTasks]);
 
-  const getRunningTask = useCallback((udid?: string, bundle_id?: string, type?: string) => {
-    if (udid && bundle_id && type) {
+  const getRunningTask = useCallback((dataFilter?: (data?: Record<string, any>) => boolean, type?: string) => {
+    if (dataFilter && type) {
       return activeTasks.find(
-        task => task.udid === udid && 
-                task.bundle_id === bundle_id && 
-                task.type === type &&
+        task => task.type === type && 
+                dataFilter(task.data) &&
                 (task.status === "started" || task.status === "progress")
       );
     }
     return activeTasks.find(task => task.status === "started" || task.status === "progress");
   }, [activeTasks]);
 
+  const allTasks = useTaskStore(state => state.tasks);
+  
   return {
     tasks: activeTasks,
-    allTasks: tasks,
+    allTasks,
     createTask,
     getTask,
     removeTask,
@@ -78,37 +97,49 @@ export function useTask(taskType?: string, udid?: string, bundle_id?: string) {
 export function useTaskSubscription(taskId: string | undefined, options?: TaskOptions) {
   const { getTask, removeTask } = useTaskStore();
   const [task, setTask] = useState<Task | undefined>();
+  const optionsRef = useRef(options);
+
+  // Keep options ref up to date
+  useEffect(() => {
+    optionsRef.current = options;
+  });
 
   useEffect(() => {
     if (!taskId) return;
 
-    const checkTask = () => {
-      const currentTask = getTask(taskId);
-      setTask(currentTask);
+    // Initial fetch
+    setTask(getTask(taskId));
 
-      if (currentTask) {
-        if (currentTask.status === "started" || currentTask.status === "progress") {
-          options?.onProgress?.(currentTask);
-        } else if (currentTask.status === "completed") {
-          options?.onComplete?.(currentTask);
-          
-          if (options?.autoRemoveOnComplete) {
-            const delay = options.autoRemoveDelay || 1000;
+    // Subscribe to store changes (no polling)
+    const unsubscribe = useTaskStore.subscribe((state: any, prevState: any) => {
+      const updatedTask = state.tasks.get(taskId);
+      const prevTask = prevState?.tasks?.get ? prevState.tasks.get(taskId) : undefined;
+      if (updatedTask === prevTask) return;
+
+      setTask(updatedTask);
+
+      if (updatedTask) {
+        const opts = optionsRef.current;
+        if (updatedTask.status === "started" || updatedTask.status === "progress") {
+          opts?.onProgress?.(updatedTask);
+        } else if (updatedTask.status === "completed") {
+          opts?.onComplete?.(updatedTask);
+          if (opts?.autoRemoveOnComplete) {
+            const delay = opts.autoRemoveDelay || 1000;
             setTimeout(() => {
-              removeTask(taskId);
+              removeTask(updatedTask.id);
             }, delay);
           }
-        } else if (currentTask.status === "error") {
-          options?.onError?.(currentTask);
+        } else if (updatedTask.status === "error") {
+          opts?.onError?.(updatedTask);
         }
       }
+    });
+
+    return () => {
+      unsubscribe();
     };
-
-    const interval = setInterval(checkTask, 100);
-    checkTask();
-
-    return () => clearInterval(interval);
-  }, [taskId, options, getTask, removeTask]);
+  }, [taskId, getTask, removeTask]);
 
   return task;
 }

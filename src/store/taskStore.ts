@@ -1,4 +1,4 @@
-import { create } from "zustand";
+import { createWithEqualityFn } from "zustand/traditional";
 
 export interface TaskProgress {
   type: string;
@@ -7,9 +7,6 @@ export interface TaskProgress {
   status: string;
   progress: number;
   message: string;
-  udid?: string;
-  bundle_id?: string;
-  file_path?: string;
   data?: Record<string, any>;
 }
 
@@ -19,9 +16,6 @@ export interface Task {
   status: string;
   progress: number;
   message: string;
-  udid?: string;
-  bundle_id?: string;
-  file_path?: string;
   data?: Record<string, any>;
   createdAt: number;
   updatedAt: number;
@@ -29,19 +23,19 @@ export interface Task {
 
 interface TaskState {
   tasks: Map<string, Task>;
-  addTask: (taskId: string, taskType: string, udid?: string, bundle_id?: string, file_path?: string) => void;
+  addTask: (taskId: string, taskType: string, data?: Record<string, any>) => void;
   updateTask: (progress: TaskProgress) => void;
   getTask: (taskId: string) => Task | undefined;
   getTasksByType: (taskType: string) => Task[];
-  getTasksByUdidAndBundleId: (udid: string, bundle_id: string) => Task[];
+  getTasksByData: (filterFn: (data?: Record<string, any>) => boolean) => Task[];
   removeTask: (taskId: string) => void;
   clearCompletedTasks: () => void;
 }
 
-export const useTaskStore = create<TaskState>((set, get) => ({
+export const useTaskStore = createWithEqualityFn<TaskState>((set, get) => ({
   tasks: new Map(),
   
-  addTask: (taskId, taskType, udid, bundle_id, file_path) => {
+  addTask: (taskId, taskType, data) => {
     set((state) => {
       const newTasks = new Map(state.tasks);
       newTasks.set(taskId, {
@@ -50,9 +44,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         status: "pending",
         progress: 0,
         message: "Task created",
-        udid,
-        bundle_id,
-        file_path,
+        data,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       });
@@ -81,9 +73,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           status: progress.status,
           progress: progress.progress,
           message: progress.message,
-          udid: progress.udid,
-          bundle_id: progress.bundle_id,
-          file_path: progress.file_path,
           data: progress.data,
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -102,12 +91,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     return Array.from(get().tasks.values()).filter(task => task.type === taskType);
   },
   
-  getTasksByUdidAndBundleId: (udid, bundle_id) => {
-    return Array.from(get().tasks.values()).filter(
-      task => task.udid === udid && task.bundle_id === bundle_id
-    );
+  getTasksByData: (filterFn) => {
+    return Array.from(get().tasks.values()).filter(task => filterFn(task.data));
   },
   
+  
+
   removeTask: (taskId) => {
     set((state) => {
       const newTasks = new Map(state.tasks);

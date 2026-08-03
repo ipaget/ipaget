@@ -1,4 +1,4 @@
-import { create } from "zustand";
+import { createWithEqualityFn } from "zustand/traditional";
 
 export type ConnectionStatus = "connected" | "connecting" | "disconnected" | "error";
 
@@ -12,7 +12,7 @@ interface ConnectionState {
   reset: () => void;
 }
 
-export const useConnectionStore = create<ConnectionState>((set) => ({
+export const useConnectionStore = createWithEqualityFn<ConnectionState>((set) => ({
   status: "connecting",
   reconnectAttempts: 0,
   errorMessage: null,

@@ -1,4 +1,4 @@
-import { create } from "zustand";
+import { createWithEqualityFn } from "zustand/traditional";
 
 interface ErrorState {
   message: string | null;
@@ -8,7 +8,7 @@ interface ErrorState {
   clearError: () => void;
 }
 
-export const useErrorStore = create<ErrorState>((set) => ({
+export const useErrorStore = createWithEqualityFn<ErrorState>((set) => ({
   message: null,
   title: null,
   showRestartButton: false,
