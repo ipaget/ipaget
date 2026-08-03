@@ -1,5 +1,9 @@
+# Outputs
+# device-info-exports
+
 # For reference only
-ref
+# ref
+# !ref/README.md
 
 # Dependencies
 node_modules/
