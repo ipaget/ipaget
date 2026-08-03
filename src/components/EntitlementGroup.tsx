@@ -24,14 +24,16 @@ export default function EntitlementGroup({
 }: EntitlementGroupProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
-  const renderValue = (value: string | string[] | boolean, key: string) => {
+  const renderValue = (value: string | string[] | boolean) => {
     if (typeof value === "boolean") {
       return (
-        <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-          value ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
-        }`}>
-          {value ? "true" : "false"}
-        </span>
+        <div className="flex items-center space-x-2 bg-gray-50 px-3 py-1.5 rounded group">
+          <OverflowText
+            text={value ? "true" : "false"}
+            className="flex-1 text-sm font-mono text-gray-700"
+          />
+          <CopyButton text={value ? "true" : "false"} size={12} />
+        </div>
       );
     }
 
@@ -86,12 +88,9 @@ export default function EntitlementGroup({
       {isExpanded && (
         <div className="px-4 py-3 space-y-3 bg-white">
           {items.map((item) => (
-            <div key={item.key} className="space-y-1">
-              <div className="flex items-center space-x-2">
-                <span className="text-xs font-medium text-gray-500">{item.key}</span>
-                <CopyButton text={item.key} size={10} />
-              </div>
-              {renderValue(item.value, item.key)}
+            <div key={item.key} className="space-y-2">
+              <span className="text-xs font-medium text-gray-500">{item.key}</span>
+              {renderValue(item.value)}
             </div>
           ))}
         </div>
