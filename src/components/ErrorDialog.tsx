@@ -1,4 +1,5 @@
 import { X, AlertCircle, RotateCw } from "lucide-react";
+import { useEffect } from "react";
 import { useErrorStore } from "../store/errorStore";
 import { useTranslation } from "react-i18next";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -6,8 +7,6 @@ import { relaunch } from "@tauri-apps/plugin-process";
 export default function ErrorDialog() {
   const { t } = useTranslation();
   const { title, message, showRestartButton, clearError } = useErrorStore();
-
-  if (!message) return null;
 
   const handleRestart = async () => {
     try {
@@ -17,9 +16,29 @@ export default function ErrorDialog() {
     }
   };
 
+  useEffect(() => {
+    // Only attach handlers when dialog is visible
+    if (!message) return;
+
+    const keydownHandler = (e: KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        clearError();
+      }
+    };
+
+    window.addEventListener("keydown", keydownHandler, { capture: true });
+    return () => {
+      window.removeEventListener("keydown", keydownHandler, { capture: true } as EventListenerOptions);
+    };
+  }, [message, clearError]);
+
+  if (!message) return null;
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg shadow-xl max-w-md w-full animate-in fade-in zoom-in duration-200">
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[70] p-4" role="dialog" aria-modal="true">
+      <div className="bg-white rounded-lg shadow-xl max-w-md w-full animate-in fade-in zoom-in duration-200 overflow-hidden">
         <div className="p-6">
           <div className="flex items-start justify-between mb-4">
             <div className="flex items-center space-x-3">
@@ -37,7 +56,7 @@ export default function ErrorDialog() {
               <X size={20} />
             </button>
           </div>
-          <p className="text-gray-600 mb-6 ml-13 whitespace-pre-line">{message}</p>
+          <p className="text-gray-600 mb-6 ml-13 whitespace-pre-line break-words overflow-wrap-anywhere max-w-full">{message}</p>
           <div className="flex justify-end gap-2">
             {showRestartButton && (
               <button

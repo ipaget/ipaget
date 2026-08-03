@@ -75,11 +75,11 @@ export default function Toast() {
   };
 
   return (
-    <div className={`fixed bottom-4 right-4 z-50 transition-all duration-300 ${
+    <div className={`fixed bottom-4 right-4 z-[60] transition-all duration-300 ${
       isVisible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"
     }`}>
       <div
-        className={`rounded-lg shadow-lg border ${getBgColor()} min-w-[300px] max-w-md overflow-hidden`}
+        className={`rounded-lg shadow-lg border ${getBgColor()} min-w-[300px] max-w-md overflow-hidden break-words`}
       >
         {showProgress && (
           <div className="w-full bg-gray-200 h-1">
@@ -89,9 +89,9 @@ export default function Toast() {
             />
           </div>
         )}
-        <div className="flex items-center space-x-3 px-4 py-3">
-          {getIcon()}
-          <p className="flex-1 text-sm text-gray-900">{message}</p>
+        <div className="flex items-start space-x-3 px-4 py-3">
+          <div className="flex-shrink-0 mt-0.5">{getIcon()}</div>
+          <p className="flex-1 text-sm text-gray-900 break-words overflow-wrap-anywhere">{message}</p>
           <button
             onClick={handleClose}
             className="text-gray-400 hover:text-gray-600 transition-colors"

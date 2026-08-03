@@ -89,11 +89,11 @@ export default function RawDataViewer({ data, excludeKeys = [], className = "" }
                 : String(value ?? '-');
 
               return (
-                <div key={key} className="grid grid-cols-[200px_1fr] gap-4 py-2 border-b border-gray-200 last:border-0 select-text">
-                  <div className="font-mono text-xs font-semibold text-gray-700 break-all">
+                <div key={key} className="grid grid-cols-[200px_1fr] gap-4 py-2 border-b border-gray-200 last:border-0 select-text min-w-0">
+                  <div className="font-mono text-xs font-semibold text-gray-700 break-words min-w-0">
                     <SearchHighlight text={key} searchQuery={searchQuery} />
                   </div>
-                  <div className="font-mono text-xs text-gray-600 break-all whitespace-pre-wrap">
+                  <div className="font-mono text-xs text-gray-600 break-all whitespace-pre-wrap min-w-0">
                     <SearchHighlight text={valueStr} searchQuery={searchQuery} />
                   </div>
                 </div>

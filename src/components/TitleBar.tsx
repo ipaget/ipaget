@@ -2,11 +2,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, X, Wifi, WifiOff, RefreshCw } from "lucide-react";
 import { useConnectionStore } from "../store/connectionStore";
 import { useTranslation } from "react-i18next";
+import { useState, useRef } from "react";
 
 export default function TitleBar() {
   const appWindow = getCurrentWindow();
   const { status, reconnectAttempts } = useConnectionStore();
   const { t } = useTranslation();
+  const [clickCount, setClickCount] = useState(0);
+  const clickTimer = useRef<number | null>(null);
 
   const handleMinimize = () => {
     appWindow.minimize();
@@ -46,10 +49,34 @@ export default function TitleBar() {
     }
   };
 
+  const handleTitleClick = () => {
+    const newCount = clickCount + 1;
+    setClickCount(newCount);
+
+    if (clickTimer.current) {
+      clearTimeout(clickTimer.current);
+    }
+
+    if (newCount >= 10) {
+      setClickCount(0);
+    } else {
+      clickTimer.current = window.setTimeout(() => {
+        setClickCount(0);
+      }, 2000);
+    }
+  };
+
   return (
-    <div className="h-8 bg-white border-b border-gray-200 flex items-center justify-between select-none">
-      <div data-tauri-drag-region className="flex-1 h-full flex items-center px-4 gap-3">
-        <span className="text-sm font-semibold text-gray-700">iPAGet</span>
+    <>
+      <div className="h-8 bg-white border-b border-gray-200 flex items-center justify-between select-none">
+        <div data-tauri-drag-region className="flex-1 h-full flex items-center px-4 gap-3">
+          <span 
+            className="text-sm font-semibold text-gray-700"
+            data-tauri-drag-region
+            onClick={handleTitleClick}
+          >
+            iPAGet
+          </span>
         
         {/* Connection Status Indicator */}
         {status !== "connected" && (
@@ -82,6 +109,7 @@ export default function TitleBar() {
         </button>
       </div>
     </div>
+    </>
   );
 }
 

@@ -1,5 +1,3 @@
-import React from 'react';
-
 interface SearchHighlightProps {
   text: string;
   searchQuery: string;
@@ -15,7 +13,7 @@ export default function SearchHighlight({ text, searchQuery, className = '' }: S
   const regex = new RegExp(`(${escapeRegExp(searchQuery)})`, 'gi');
   const matches = text.split(regex);
 
-  matches.forEach((part, index) => {
+  matches.forEach((part) => {
     if (part) {
       const isMatch = regex.test(part);
       regex.lastIndex = 0; // Reset regex state

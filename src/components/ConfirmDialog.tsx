@@ -50,7 +50,7 @@ export default function ConfirmDialog({
 
   return (
     <Transition appear show={isOpen} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={onCancel}>
+      <Dialog as="div" className="relative z-[50]" onClose={onCancel}>
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-300"
