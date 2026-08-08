@@ -4,3 +4,48 @@
 [submodule "go-service/vendors/ipatool"]
 	path = go-service/vendors/ipatool
 	url = git@github.com:ipaget/ipatool.git
+[submodule "ref/altstore"]
+	path = ref/altstore
+	url = https://github.com/altstoreio/AltStore.git
+[submodule "ref/anisette-v3-server"]
+	path = ref/anisette-v3-server
+	url = https://github.com/Dadoum/Anisette-V3-Server.git
+[submodule "ref/apple-private-apis"]
+	path = ref/apple-private-apis
+	url = https://github.com/SideStore/apple-private-apis.git
+[submodule "ref/asspp"]
+	path = ref/asspp
+	url = https://github.com/Lakr233/Asspp.git
+[submodule "ref/developer_disk_image"]
+	path = ref/developer_disk_image
+	url = https://github.com/fxph35/DeveloperDiskImage.git
+[submodule "ref/feather"]
+	path = ref/feather
+	url = https://github.com/khcrysalis/Feather.git
+[submodule "ref/gsalogin"]
+	path = ref/gsalogin
+	url = https://github.com/mwpcheung/gsalogin.git
+[submodule "ref/iloader"]
+	path = ref/iloader
+	url = https://github.com/nab138/iloader.git
+[submodule "ref/ldid"]
+	path = ref/ldid
+	url = https://github.com/xerub/ldid.git
+[submodule "ref/omnisette-server"]
+	path = ref/omnisette-server
+	url = https://github.com/Dadoum/Anisette-V3-Server.git
+[submodule "ref/pymobiledevice3"]
+	path = ref/pymobiledevice3
+	url = https://github.com/doronzio/pymobiledevice3.git
+[submodule "ref/sidestore"]
+	path = ref/sidestore
+	url = https://github.com/SideStore/SideStore.git
+[submodule "ref/stosvpn"]
+	path = ref/stosvpn
+	url = https://github.com/SideStore/StosVPN.git
+[submodule "ref/trollstore"]
+	path = ref/trollstore
+	url = https://github.com/opa334/TrollStore.git
+[submodule "ref/zsign"]
+	path = ref/zsign
+	url = https://github.com/zhlynn/zsign.git
