@@ -1,55 +1,56 @@
 package models
 
 type DeviceInfo struct {
-	UDID               string                 `json:"udid"`
-	Name               string                 `json:"name"`
-	Model              string                 `json:"model"`                      // Friendly model name (e.g., "iPhone 13")
-	Version            string                 `json:"version"`                    // iOS version (e.g., "18.7.1")
-	Color              string                 `json:"color,omitempty"`            // Device color
-	EnclosureColor     string                 `json:"enclosure_color,omitempty"`  // Device enclosure color
-	ProductType        string                 `json:"product_type"`               // Internal identifier (e.g., "iPhone14,5")
-	ProductName        string                 `json:"product_name"`               // e.g., "A2634"
-	BuildVersion       string                 `json:"build_version"`              // e.g., "22H31"
-	FirmwareVersion    string                 `json:"firmware_version"`           // Firmware version (e.g., "iBoot-11881.140.96")
-	SerialNumber       string                 `json:"serial_number"`              // Device serial number
-	IMEI               string                 `json:"imei,omitempty"`             // International Mobile Equipment Identity
-	IMEI2              string                 `json:"imei2,omitempty"`            // International Mobile Equipment Identity 2
-	PhoneNumber        string                 `json:"phone_number"`               // Phone number
-	ECID               string                 `json:"ecid,omitempty"`             // Exclusive Chip ID (last 16 chars of UDID)
-	RegionInfo         string                 `json:"region_info"`                // e.g., "CH/A"
-	ModelNumber        string                 `json:"model_number"`               // e.g., "MLE03"
-	RegulatoryModel    string                 `json:"regulatory_model"`           // e.g., "A2634"
-	SalesModel         string                 `json:"sales_model"`                // Sales model (ModelNumber + RegionInfo, e.g., "MLE03 CH/A")
-	TimeZone           string                 `json:"time_zone"`                  // Time zone (e.g., "Asia/Shanghai")
-	ActivationState    string                 `json:"activation_state"`           // Activated/Unactivated
-	IsPaired           bool                   `json:"is_paired"`                  // Device pairing status
-	IsJailbroken       bool                   `json:"is_jailbroken"`              // Jailbreak status
-	ConnectionType     string                 `json:"connection_type"`            // usb | network | unknown
-	CPUArchitecture    string                 `json:"cpu_architecture"`           // CPU type
-	DiskType           string                 `json:"disk_type,omitempty"`        // Storage type
-	BatteryLevel       int                    `json:"battery_level"`              // Battery percentage
-	BatteryIsCharging  bool                   `json:"battery_is_charging"`        // Battery is actively charging
-	BatteryExternalConnected bool             `json:"battery_external_connected"` // External power is connected
-	BatteryFullyCharged bool                  `json:"battery_fully_charged"`      // Battery is fully charged
-	BatteryHealth      int                    `json:"battery_health"`             // Battery health percentage
-	BatteryCycleCount  int                    `json:"battery_cycle_count"`        // Charge cycles
-	BatteryWatts       float64                `json:"battery_watts,omitempty"`    // Charging wattage
-	ManufactureDate    string                 `json:"manufacture_date"`           // Production date
-	WarrantyExpiration string                 `json:"warranty_expiration"`        // Warranty expiration
-	AppleIDLocked      bool                   `json:"apple_id_locked"`            // Apple ID lock status (FMIP)
-	ICloudEnabled      bool                   `json:"icloud_enabled"`             // iCloud status
-	WiFiAddress        string                 `json:"wifi_address"`               // WiFi MAC address
-	EthernetAddress    string                 `json:"ethernet_address"`           // Cellular/Ethernet MAC address
-	BluetoothAddress   string                 `json:"bluetooth_address"`          // Bluetooth MAC address
-	IMSI               string                 `json:"imsi,omitempty"`             // International Mobile Subscriber Identity
-	SIMStatus          string                 `json:"sim_status,omitempty"`       // SIM Status
-	SIMTrayStatus      string                 `json:"sim_tray_status,omitempty"`  // SIM Tray Status
-	SIM1Info           string                 `json:"sim1_info,omitempty"`        // SIM 1 Carrier Info
-	SIM2Info           string                 `json:"sim2_info,omitempty"`        // SIM 2 Carrier Info
-	CrashLogCount      int                    `json:"crash_log_count"`            // Number of crash logs
-	StorageInfo        *StorageInfo           `json:"storage_info,omitempty"`     // Device storage information
-	HardwareDetails    *HardwareDetails       `json:"hardware_details,omitempty"` // Detailed hardware information
-	RawData            map[string]interface{} `json:"raw_data,omitempty"`         // All raw device data from GetValues
+	UDID                     string                 `json:"udid"`
+	Name                     string                 `json:"name"`
+	Model                    string                 `json:"model"`                     // Friendly model name (e.g., "iPhone 13")
+	Version                  string                 `json:"version"`                   // iOS version (e.g., "18.7.1")
+	Color                    string                 `json:"color,omitempty"`           // Device color
+	EnclosureColor           string                 `json:"enclosure_color,omitempty"` // Device enclosure color
+	ProductType              string                 `json:"product_type"`              // Internal identifier (e.g., "iPhone14,5")
+	ProductName              string                 `json:"product_name"`              // e.g., "A2634"
+	BuildVersion             string                 `json:"build_version"`             // e.g., "22H31"
+	FirmwareVersion          string                 `json:"firmware_version"`          // Firmware version (e.g., "iBoot-11881.140.96")
+	SerialNumber             string                 `json:"serial_number"`             // Device serial number
+	IMEI                     string                 `json:"imei,omitempty"`            // International Mobile Equipment Identity
+	IMEI2                    string                 `json:"imei2,omitempty"`           // International Mobile Equipment Identity 2
+	PhoneNumber              string                 `json:"phone_number"`              // Phone number
+	ECID                     string                 `json:"ecid,omitempty"`            // Exclusive Chip ID (last 16 chars of UDID)
+	RegionInfo               string                 `json:"region_info"`               // e.g., "CH/A"
+	ModelNumber              string                 `json:"model_number"`              // e.g., "MLE03"
+	RegulatoryModel          string                 `json:"regulatory_model"`          // e.g., "A2634"
+	SalesModel               string                 `json:"sales_model"`               // Sales model (ModelNumber + RegionInfo, e.g., "MLE03 CH/A")
+	TimeZone                 string                 `json:"time_zone"`                 // Time zone (e.g., "Asia/Shanghai")
+	ActivationState          string                 `json:"activation_state"`          // Activated/Unactivated
+	IsPaired                 bool                   `json:"is_paired"`                 // Device pairing status
+	IsJailbroken             bool                   `json:"is_jailbroken"`             // Jailbreak status
+	ConnectionType           string                 `json:"connection_type"`           // usb | network | unknown
+	WiFiDebuggingEnabled     bool                   `json:"wifi_debugging_enabled"`
+	CPUArchitecture          string                 `json:"cpu_architecture"`           // CPU type
+	DiskType                 string                 `json:"disk_type,omitempty"`        // Storage type
+	BatteryLevel             int                    `json:"battery_level"`              // Battery percentage
+	BatteryIsCharging        bool                   `json:"battery_is_charging"`        // Battery is actively charging
+	BatteryExternalConnected bool                   `json:"battery_external_connected"` // External power is connected
+	BatteryFullyCharged      bool                   `json:"battery_fully_charged"`      // Battery is fully charged
+	BatteryHealth            int                    `json:"battery_health"`             // Battery health percentage
+	BatteryCycleCount        int                    `json:"battery_cycle_count"`        // Charge cycles
+	BatteryWatts             float64                `json:"battery_watts,omitempty"`    // Charging wattage
+	ManufactureDate          string                 `json:"manufacture_date"`           // Production date
+	WarrantyExpiration       string                 `json:"warranty_expiration"`        // Warranty expiration
+	AppleIDLocked            bool                   `json:"apple_id_locked"`            // Apple ID lock status (FMIP)
+	ICloudEnabled            bool                   `json:"icloud_enabled"`             // iCloud status
+	WiFiAddress              string                 `json:"wifi_address"`               // WiFi MAC address
+	EthernetAddress          string                 `json:"ethernet_address"`           // Cellular/Ethernet MAC address
+	BluetoothAddress         string                 `json:"bluetooth_address"`          // Bluetooth MAC address
+	IMSI                     string                 `json:"imsi,omitempty"`             // International Mobile Subscriber Identity
+	SIMStatus                string                 `json:"sim_status,omitempty"`       // SIM Status
+	SIMTrayStatus            string                 `json:"sim_tray_status,omitempty"`  // SIM Tray Status
+	SIM1Info                 string                 `json:"sim1_info,omitempty"`        // SIM 1 Carrier Info
+	SIM2Info                 string                 `json:"sim2_info,omitempty"`        // SIM 2 Carrier Info
+	CrashLogCount            int                    `json:"crash_log_count"`            // Number of crash logs
+	StorageInfo              *StorageInfo           `json:"storage_info,omitempty"`     // Device storage information
+	HardwareDetails          *HardwareDetails       `json:"hardware_details,omitempty"` // Detailed hardware information
+	RawData                  map[string]interface{} `json:"raw_data,omitempty"`         // All raw device data from GetValues
 }
 
 // HardwareDetails contains detailed hardware information
@@ -139,11 +140,11 @@ type AppInfo struct {
 	Name                   string                 `json:"name"`
 	Version                string                 `json:"version"`
 	IconURL                *string                `json:"icon_url,omitempty"`
-	IconData               *string                `json:"icon_data,omitempty"` // Base64 encoded
-	AuthType               string                 `json:"auth_type"`           // apple_store, shared, development, unknown
+	IconData               *string                `json:"icon_data,omitempty"`          // Base64 encoded
+	AuthType               string                 `json:"auth_type"`                    // apple_store, shared, development, unknown
 	PurchaserAppleID       string                 `json:"purchaser_apple_id,omitempty"` // App Store purchaser account
 	IsSharedLibrary        bool                   `json:"is_shared_library,omitempty"`  // Synthetic shared App Group entry
-	SharedGroupID          string                 `json:"shared_group_id,omitempty"`     // App Group identifier
+	SharedGroupID          string                 `json:"shared_group_id,omitempty"`    // App Group identifier
 	SharedByBundleIDs      []string               `json:"shared_by_bundle_ids,omitempty"`
 	BuildMachineOSBuild    string                 `json:"build_machine_os_build,omitempty"`
 	CFBundleExecutable     string                 `json:"cf_bundle_executable,omitempty"`
@@ -229,13 +230,13 @@ type AppSearchResult struct {
 	MinimumOSVersion          string   `json:"minimum_os_version,omitempty"`
 	ReleaseDate               string   `json:"release_date,omitempty"`
 	CurrentVersionReleaseDate string   `json:"current_version_release_date,omitempty"`
+	SupportedDevices          []string `json:"supported_devices,omitempty"`
 }
 
 type AppDetails struct {
 	AppSearchResult
 	Screenshots       []string `json:"screenshots,omitempty"`
 	ScreenshotsIPad   []string `json:"screenshots_ipad,omitempty"`
-	SupportedDevices  []string `json:"supported_devices,omitempty"`
 	LanguageCodes     []string `json:"language_codes,omitempty"`
 	HasInAppPurchases bool     `json:"has_in_app_purchases"`
 }

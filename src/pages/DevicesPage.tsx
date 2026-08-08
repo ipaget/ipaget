@@ -73,6 +73,7 @@ export default function DevicesPage() {
   const [isLoadingApps, setIsLoadingApps] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
   const [showSystemApps, setShowSystemApps] = useState(false);
+  const [showSharedLibraries, setShowSharedLibraries] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedAppIds, setSelectedAppIds] = useState<Set<string>>(new Set());
 
@@ -89,6 +90,7 @@ export default function DevicesPage() {
   const [ipaPreviewPath, setIpaPreviewPath] = useState<string | null>(null);
   const [deviceLockError, setDeviceLockError] = useState<'locked' | 'timeout' | null>(null);
   const [deviceImageError, setDeviceImageError] = useState<Record<string, boolean>>({});
+  const [deviceImageLoaded, setDeviceImageLoaded] = useState<Record<string, boolean>>({});
   const [copiedDeviceName, setCopiedDeviceName] = useState(false);
   const [copiedDeviceInfo, setCopiedDeviceInfo] = useState(false);
   const [hoveringDeviceName, setHoveringDeviceName] = useState(false);
@@ -507,6 +509,8 @@ export default function DevicesPage() {
 
   const filteredAndSortedApps = useMemo(() => {
     let filtered = deviceApps.filter(app => {
+      const isSharedLibrary = app.is_shared_library || app.auth_type === 'shared_library';
+      if (!showSharedLibraries && isSharedLibrary) return false;
       if (!showSystemApps && app.auth_type === 'system') return false;
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase();
@@ -559,7 +563,7 @@ export default function DevicesPage() {
       }
       return sortDirection === 'asc' ? comparison : -comparison;
     });
-  }, [deviceApps, showSystemApps, searchQuery, sortField, sortDirection]);
+  }, [deviceApps, showSharedLibraries, showSystemApps, searchQuery, sortField, sortDirection]);
 
   const handleSelectApp = useCallback((bundleId: string, ctrlKey: boolean = false) => {
     if (ctrlKey) {
@@ -1038,7 +1042,12 @@ export default function DevicesPage() {
   };
 
   const handleDeviceImageError = (udid: string) => {
+    setDeviceImageLoaded(prev => ({ ...prev, [udid]: false }));
     setDeviceImageError(prev => ({ ...prev, [udid]: true }));
+  };
+
+  const handleDeviceImageLoad = (udid: string) => {
+    setDeviceImageLoaded(prev => ({ ...prev, [udid]: true }));
   };
 
   const getDisplayStorageBytes = (device: DeviceInfo): number | null => {
@@ -1233,15 +1242,20 @@ export default function DevicesPage() {
                       {(() => {
                         const imageUrl = getDeviceImageUrl(selectedDevice);
                         const hasError = deviceImageError[selectedDevice.udid];
+                        const imageLoaded = deviceImageLoaded[selectedDevice.udid];
                         
                         if (imageUrl && !hasError) {
                           return (
-                            <img
-                              src={imageUrl}
-                              alt={selectedDevice.name}
-                              className="w-full h-full object-contain scale-150"
-                              onError={() => handleDeviceImageError(selectedDevice.udid)}
-                            />
+                            <div className="relative w-full h-full flex items-center justify-center">
+                              {!imageLoaded && <Loader2 className="absolute animate-spin text-primary-600" size={24} />}
+                              <img
+                                src={imageUrl}
+                                alt={selectedDevice.name}
+                                className={`w-full h-full object-contain scale-150 transition-opacity duration-200 ${imageLoaded ? "opacity-100" : "opacity-0"}`}
+                                onLoad={() => handleDeviceImageLoad(selectedDevice.udid)}
+                                onError={() => handleDeviceImageError(selectedDevice.udid)}
+                              />
+                            </div>
                           );
                         }
                         
@@ -1374,15 +1388,20 @@ export default function DevicesPage() {
                                           {(() => {
                                             const imageUrl = getDeviceImageUrl(device);
                                             const hasError = deviceImageError[device.udid];
+                                            const imageLoaded = deviceImageLoaded[device.udid];
                                             
                                             if (imageUrl && !hasError) {
                                               return (
-                                                <img
-                                                  src={imageUrl}
-                                                  alt={device.name}
-                                                  className="w-full h-full object-contain scale-150"
-                                                  onError={() => handleDeviceImageError(device.udid)}
-                                                />
+                                                <div className="relative w-full h-full flex items-center justify-center">
+                                                  {!imageLoaded && <Loader2 className="absolute animate-spin text-primary-600" size={24} />}
+                                                  <img
+                                                    src={imageUrl}
+                                                    alt={device.name}
+                                                    className={`w-full h-full object-contain scale-150 transition-opacity duration-200 ${imageLoaded ? "opacity-100" : "opacity-0"}`}
+                                                    onLoad={() => handleDeviceImageLoad(device.udid)}
+                                                    onError={() => handleDeviceImageError(device.udid)}
+                                                  />
+                                                </div>
                                               );
                                             }
                                             
@@ -1460,7 +1479,10 @@ export default function DevicesPage() {
               <div className="mb-6 flex items-center justify-between gap-4">
                 <div className="flex items-center space-x-3 flex-shrink-0">
                   <h3 className="text-xl font-bold text-gray-900">
-                    {deviceApps.filter(app => showSystemApps || app.auth_type !== 'system').length} {t('common.apps')}
+                    {deviceApps.filter(app => {
+                      const isSharedLibrary = app.is_shared_library || app.auth_type === 'shared_library';
+                      return (showSystemApps || app.auth_type !== 'system') && (showSharedLibraries || !isSharedLibrary);
+                    }).length} {t('common.apps')}
                   </h3>
                   {selectedAppIds.size > 0 && (
                     <>
@@ -1523,6 +1545,23 @@ export default function DevicesPage() {
                                   className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 cursor-pointer"
                                 />
                                 <span className="text-gray-700">{t("devices.showSystemApps")}</span>
+                              </label>
+                            )}
+                          </Menu.Item>
+                          <Menu.Item>
+                            {({ active }) => (
+                              <label
+                                className={`flex items-center space-x-2 px-3 py-2 text-sm rounded-md cursor-pointer transition-colors ${
+                                  active ? 'bg-gray-100' : ''
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={showSharedLibraries}
+                                  onChange={(e) => setShowSharedLibraries(e.target.checked)}
+                                  className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 cursor-pointer"
+                                />
+                                <span className="text-gray-700">{t("devices.showSharedLibraries")}</span>
                               </label>
                             )}
                           </Menu.Item>
@@ -1625,6 +1664,12 @@ export default function DevicesPage() {
       <DeviceDetailsDialog
         device={showDeviceDetails ? selectedDevice : null}
         onClose={() => setShowDeviceDetails(false)}
+        onDeviceUpdated={(updatedDevice) => {
+          setConnectedDevices(
+            connectedDevices.map((device) => device.udid === updatedDevice.udid ? updatedDevice : device)
+          );
+          setSelectedDevice(updatedDevice);
+        }}
       />
 
       {/* Context Menu */}

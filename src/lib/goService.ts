@@ -94,6 +94,7 @@ export interface DeviceInfo {
   is_paired: boolean; // Device pairing status
   is_jailbroken: boolean; // Jailbreak status
   connection_type?: "usb" | "network" | "unknown" | string; // How the device is linked to this PC
+  wifi_debugging_enabled: boolean;
   cpu_architecture: string; // CPU type
   disk_type?: string; // Storage type
   battery_level: number; // Battery percentage
@@ -290,6 +291,8 @@ export interface AuthResponse {
   error_code?: string;
 }
 
+export type AppStoreType = "iphone" | "ipad";
+
 export interface AppSearchResult {
   id: number;
   bundle_id: string;
@@ -316,12 +319,12 @@ export interface AppSearchResult {
   minimum_os_version?: string;
   release_date?: string;
   current_version_release_date?: string;
+  supported_devices?: string[];
 }
 
 export interface AppDetails extends AppSearchResult {
   screenshots?: string[];
   screenshots_ipad?: string[];
-  supported_devices?: string[];
   language_codes?: string[];
   has_in_app_purchases: boolean;
 }
@@ -564,6 +567,17 @@ export class GoServiceClient {
       // Don't notify for one-time API errors
       throw error;
     }
+  }
+
+  async getFullDeviceInfo(udid: string): Promise<Record<string, any>> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/device/${encodeURIComponent(udid)}/device-info`);
+    const payload = await response.json();
+    const result = typeof payload === "string" ? JSON.parse(payload) : payload;
+    if (!response.ok) {
+      throw new Error(result.error || "Failed to get full device info");
+    }
+    return result.data || {};
   }
 
   async listConnectedDeviceUDIDs(): Promise<string[]> {
@@ -1047,13 +1061,15 @@ export class GoServiceClient {
   async searchApps(
     keyword: string,
     countryCode: string,
-    limit: number = 10
+    limit: number = 10,
+    storeType: AppStoreType = "iphone"
   ): Promise<AppSearchResult[]> {
     await this.init();
     const params = new URLSearchParams({
       keyword,
       country: countryCode.toLowerCase(),
       limit: limit.toString(),
+      store: storeType,
     });
     
     const response = await fetch(`${this.baseUrl}/apps/search?${params}`);
@@ -1227,6 +1243,24 @@ export class GoServiceClient {
     }
     
     return { success: true };
+  }
+
+  async setWiFiDebugging(udid: string, enabled: boolean): Promise<boolean> {
+    const url = await ensureServiceRunning();
+    const response = await fetch(`${url}/device/${udid}/wifi-debugging`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ enabled }),
+    });
+
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error || "Failed to configure Wi-Fi debugging");
+    }
+
+    return result.enabled === true;
   }
 
   async parseIPA(filePath: string): Promise<IPAInfo> {
@@ -1536,11 +1570,12 @@ export class GoServiceClient {
     return result.data;
   }
 
-  async getTopApps(countryCode: string = "cn", limit: number = 20): Promise<AppSearchResult[]> {
+  async getTopApps(countryCode: string = "cn", limit: number = 20, storeType: AppStoreType = "iphone"): Promise<AppSearchResult[]> {
     await this.init();
     const params = new URLSearchParams({
       country: countryCode,
       limit: limit.toString(),
+      store: storeType,
     });
     
     const response = await fetch(`${this.baseUrl}/apps/top?${params}`);

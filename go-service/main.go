@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -35,6 +36,8 @@ import (
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/afc"
+	coredeviceinfo "github.com/danielpaulus/go-ios/ios/deviceinfo"
+	"github.com/danielpaulus/go-ios/ios/instruments"
 	// crashreport is intentionally not used here. We implement the minimal
 	// crashreportmover + crashreportcopymobile logic to ensure connections
 	// are properly closed per request.
@@ -224,6 +227,7 @@ func main() {
 	r.POST("/device/:udid/shutdown", handleShutdownDevice)
 	r.GET("/device/:udid/pair-status", handleCheckPairingStatus)
 	r.POST("/device/:udid/pair", handlePairDevice)
+	r.POST("/device/:udid/wifi-debugging", handleSetWiFiDebugging)
 
 	// Debug endpoints
 	r.GET("/device/:udid/lockdown-debug", handleLockdownDebug)
@@ -1657,14 +1661,207 @@ func collectFullDeviceInfo(device ios.DeviceEntry) (map[string]interface{}, erro
 		"IOResources",
 	}
 
+	sensorSerials := make(map[string]interface{})
 	for _, entry := range entries {
 		val, err := queryIORegistryEntry(device, entry, "")
 		if err == nil && val != nil {
 			result["ioregentry:"+entry] = val
+			extractSensorSerials(val, sensorSerials)
 		}
 	}
 
+	// Part 4: full IORegistry tree — extract sensor/module serials that live in
+	// nodes not covered by the fixed entry list above (proximity, IR camera, etc.)
+	if fullReg, err := queryIORegistryEntry(device, "", ""); err == nil {
+		extractSensorSerials(fullReg, sensorSerials)
+	} else {
+		result["ioregistry:full_tree_status"] = map[string]interface{}{
+			"status": "error",
+			"error":  err.Error(),
+		}
+	}
+	for k, v := range sensorSerials {
+		result["sensor:"+k] = v
+	}
+
+	// Part 5: MobileGestalt exposes the active radio technology and component
+	// identifiers that are not present in the ordinary lockdown value set.
+	mobileGestaltKeys := []string{
+		"ActiveWirelessTechnology",
+		"BasebandRegionSKURadioTechnology",
+		"WirelessTechnology",
+		"WirelessTechnologyType",
+		"kCTWirelessTechnology",
+		"TelephonyMaximumGeneration",
+		"CellularTelephonyCapability",
+		"LTEDeviceCapability",
+		"FrontFacingIRCameraModuleSerialNumber",
+		"FrontFacingIRStructuredLightProjectorModuleSerialNumber",
+		"FrontFacingCameraModuleSerialNumber",
+		"RosalineSerialNumber",
+		"AmbientLightSensorSerialNumber",
+		"CoverglassSerialNumber",
+		"ScreenSerialNumber",
+		"PanelSerialNumber",
+		"RawPanelSerialNumber",
+		"BatterySerialNumber",
+		"WifiChipset",
+		"WifiModuleSerial",
+		"MainScreenWidth",
+		"MainScreenHeight",
+		"ScreenDimensions",
+		"OLEDDisplay",
+	}
+	if mobileGestalt, err := queryMobileGestalt(device, mobileGestaltKeys); err == nil && mobileGestalt != nil {
+		result["mobilegestalt"] = mobileGestalt
+	} else if err != nil {
+		result["mobilegestalt:status"] = map[string]interface{}{
+			"status": "error",
+			"error":  err.Error(),
+		}
+	}
+
+	coreDevice := device
+	coreDeviceStatus := map[string]interface{}{"status": "unavailable"}
+	if tunneledDevice, err := attachExistingTunnel(device); err == nil {
+		coreDevice = tunneledDevice
+		coreDeviceStatus["tunnel"] = "connected"
+	} else {
+		coreDeviceStatus["tunnel"] = "unavailable"
+		coreDeviceStatus["tunnel_error"] = err.Error()
+	}
+	if mobileGestalt, err := queryCoreDeviceMobileGestalt(coreDevice, mobileGestaltKeys); err == nil && mobileGestalt != nil {
+		result["mobilegestalt:coredevice"] = mobileGestalt
+		coreDeviceStatus["status"] = "success"
+	} else if err != nil {
+		coreDeviceStatus["error"] = err.Error()
+	}
+	result["mobilegestalt:coredevice:status"] = coreDeviceStatus
+
+	if instrumentsService, err := instruments.NewDeviceInfoService(device); err == nil {
+		if hardwareInfo, err := instrumentsService.HardwareInformation(); err == nil {
+			result["instruments:hardwareInformation"] = hardwareInfo
+			for key, value := range hardwareInfo {
+				result["hardware:"+key] = value
+			}
+		}
+		instrumentsService.Close()
+	}
+
 	return result, nil
+}
+
+func queryMobileGestalt(device ios.DeviceEntry, keys []string) (map[string]interface{}, error) {
+	deviceConn, err := ios.ConnectToService(device, "com.apple.mobile.diagnostics_relay")
+	if err != nil {
+		return nil, err
+	}
+	defer deviceConn.Close()
+
+	plistCodec := ios.NewPlistCodec()
+	request := map[string]interface{}{
+		"Request":           "MobileGestalt",
+		"MobileGestaltKeys": keys,
+	}
+	encoded, err := plistCodec.Encode(request)
+	if err != nil {
+		return nil, err
+	}
+	if err := deviceConn.Send(encoded); err != nil {
+		return nil, err
+	}
+
+	responseBytes, err := plistCodec.Decode(deviceConn.Reader())
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := ios.ParsePlist(responseBytes)
+	if err != nil {
+		return nil, err
+	}
+	if status, ok := parsed["Status"].(string); ok && status != "Success" {
+		return nil, fmt.Errorf("MobileGestalt request failed: %s", status)
+	}
+	diagnostics, ok := parsed["Diagnostics"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("MobileGestalt response has no Diagnostics payload")
+	}
+	mobileGestalt, ok := diagnostics["MobileGestalt"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("MobileGestalt response has no MobileGestalt payload")
+	}
+	return mobileGestalt, nil
+}
+
+func queryCoreDeviceMobileGestalt(device ios.DeviceEntry, keys []string) (map[string]interface{}, error) {
+	service, err := coredeviceinfo.NewDeviceInfo(device)
+	if err != nil {
+		return nil, err
+	}
+	defer service.Close()
+	return service.QueryMobileGestalt(keys)
+}
+
+func attachExistingTunnel(device ios.DeviceEntry) (ios.DeviceEntry, error) {
+	host := ios.HttpApiHost()
+	port := ios.HttpApiPort()
+	client := &http.Client{Timeout: 2 * time.Second}
+	healthURL := fmt.Sprintf("http://%s:%d/health", host, port)
+	healthResponse, err := client.Get(healthURL)
+	if err != nil {
+		return device, fmt.Errorf("go-ios tunnel agent is not running on %s:%d: %w", host, port, err)
+	}
+	healthResponse.Body.Close()
+	if healthResponse.StatusCode != http.StatusOK {
+		return device, fmt.Errorf("go-ios tunnel agent returned health status %d", healthResponse.StatusCode)
+	}
+
+	tunnelURL := fmt.Sprintf("http://%s:%d/tunnel/%s", host, port, url.PathEscape(device.Properties.SerialNumber))
+	tunnelResponse, err := client.Get(tunnelURL)
+	if err != nil {
+		return device, err
+	}
+	defer tunnelResponse.Body.Close()
+	if tunnelResponse.StatusCode != http.StatusOK {
+		return device, fmt.Errorf("go-ios tunnel has no active tunnel for device (status %d)", tunnelResponse.StatusCode)
+	}
+
+	var info struct {
+		Address          string `json:"address"`
+		RsdPort          int    `json:"rsdPort"`
+		UserspaceTUN     bool   `json:"userspaceTun"`
+		UserspaceTUNPort int    `json:"userspaceTunPort"`
+	}
+	if err := json.NewDecoder(tunnelResponse.Body).Decode(&info); err != nil {
+		return device, fmt.Errorf("failed to parse go-ios tunnel information: %w", err)
+	}
+	if strings.TrimSpace(info.Address) == "" || info.RsdPort <= 0 {
+		return device, fmt.Errorf("go-ios tunnel returned incomplete device information")
+	}
+
+	device.UserspaceTUN = info.UserspaceTUN
+	device.UserspaceTUNHost = host
+	device.UserspaceTUNPort = info.UserspaceTUNPort
+
+	rsdService, err := ios.NewWithAddrPortDevice(info.Address, info.RsdPort, device)
+	if err != nil {
+		return device, err
+	}
+	defer rsdService.Close()
+
+	rsdProvider, err := rsdService.Handshake()
+	if err != nil {
+		return device, err
+	}
+
+	tunneledDevice, err := ios.GetDeviceWithAddress(device.Properties.SerialNumber, info.Address, rsdProvider)
+	if err != nil {
+		return device, err
+	}
+	tunneledDevice.UserspaceTUN = info.UserspaceTUN
+	tunneledDevice.UserspaceTUNHost = host
+	tunneledDevice.UserspaceTUNPort = info.UserspaceTUNPort
+	return tunneledDevice, nil
 }
 
 func queryIORegistryEntry(device ios.DeviceEntry, entryName string, entryClass string) (map[string]interface{}, error) {
@@ -1703,6 +1900,146 @@ func queryIORegistryEntry(device ios.DeviceEntry, entryName string, entryClass s
 		return diag, nil
 	}
 	return parsed, nil
+}
+
+// isSensorSerialKey reports whether an IORegistry key looks like a hardware
+// module serial / sensor identifier worth surfacing.
+func isSensorSerialKey(key string) bool {
+	lower := normalizeHardwareKey(key)
+	if strings.Contains(lower, "serial") || strings.Contains(lower, "serialno") || lower == "sn" {
+		return true
+	}
+	for _, prefix := range []string{
+		"proximity", "infraredcamera", "dotprojector", "dotmatrix",
+		"ambientlight", "frontcamera", "backcamera", "truedepth",
+		"rosaline", "coverglass", "display",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeHardwareKey(key string) string {
+	var normalized strings.Builder
+	for _, char := range strings.ToLower(key) {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') {
+			normalized.WriteRune(char)
+		}
+	}
+	return normalized.String()
+}
+
+func isPrintableHardwareValue(value string) bool {
+	for _, char := range value {
+		if char < 0x20 || char > 0x7e {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func decodeHardwareValue(value interface{}) interface{} {
+	var text string
+	switch typed := value.(type) {
+	case string:
+		text = strings.TrimSpace(typed)
+	case []byte:
+		text = strings.TrimSpace(string(typed))
+	default:
+		return value
+	}
+	if text == "" {
+		return value
+	}
+
+	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
+		decoded, err := encoding.DecodeString(text)
+		if err != nil {
+			continue
+		}
+		decodedText := strings.TrimRight(string(decoded), "\x00")
+		if isPrintableHardwareValue(decodedText) {
+			return decodedText
+		}
+	}
+	if isPrintableHardwareValue(text) {
+		return text
+	}
+	return value
+}
+
+func canonicalSensorKey(key string) string {
+	normalized := normalizeHardwareKey(key)
+	switch {
+	case strings.Contains(normalized, "frontfacingircameramoduleserial"),
+		strings.Contains(normalized, "infraredcameramoduleserial"),
+		strings.Contains(normalized, "infraredcameraserial"),
+		strings.Contains(normalized, "frontcameraserial"):
+		return "infraredCamera"
+	case strings.Contains(normalized, "frontfacingirstructuredlightprojectormoduleserial"),
+		strings.Contains(normalized, "dotprojector"),
+		strings.Contains(normalized, "dotmatrix"):
+		return "dotProjector"
+	case strings.Contains(normalized, "rosaline"), strings.Contains(normalized, "proximity"):
+		return "proximitySensor"
+	case strings.Contains(normalized, "ambientlightsensor"):
+		return "ambientLightSensor"
+	case strings.Contains(normalized, "batteryserial"):
+		return "battery"
+	case strings.Contains(normalized, "coverglass"):
+		return "coverGlass"
+	case strings.Contains(normalized, "rawpanelserial"),
+		strings.Contains(normalized, "panelserial"),
+		strings.Contains(normalized, "screenserial"),
+		strings.Contains(normalized, "displayserial"):
+		return "screen"
+	default:
+		return ""
+	}
+}
+
+func addSensorSerial(out map[string]interface{}, key string, value interface{}) {
+	decoded := decodeHardwareValue(value)
+	if decoded == nil {
+		return
+	}
+	if text, ok := decoded.(string); ok && strings.TrimSpace(text) == "" {
+		return
+	}
+	out[key] = decoded
+	if canonical := canonicalSensorKey(key); canonical != "" {
+		if _, exists := out[canonical]; !exists {
+			out[canonical] = decoded
+		}
+	}
+}
+
+// extractSensorSerials recursively walks an IORegistry tree (the full dump
+// returned without an EntryName) and collects string values of interest into out.
+func extractSensorSerials(value interface{}, out map[string]interface{}) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for k, child := range v {
+			if isSensorSerialKey(k) {
+				addSensorSerial(out, k, child)
+			}
+			extractSensorSerials(child, out)
+		}
+	case map[interface{}]interface{}:
+		for k, child := range v {
+			ks := fmt.Sprintf("%v", k)
+			if isSensorSerialKey(ks) {
+				addSensorSerial(out, ks, child)
+			}
+			extractSensorSerials(child, out)
+		}
+	case []interface{}:
+		for _, item := range v {
+			extractSensorSerials(item, out)
+		}
+	}
 }
 
 func readCrashLogFile(device ios.DeviceEntry, devicePath string, maxBytes int) (string, bool, error) {
@@ -2115,11 +2452,12 @@ func handleCheckLicense(c *gin.Context) {
 func handleGetTopApps(c *gin.Context) {
 	limitStr := c.DefaultQuery("limit", "50")
 	country := c.Query("country")
+	storeType := c.DefaultQuery("store", "iphone")
 
 	limit := 50
 	fmt.Sscanf(limitStr, "%d", &limit)
 
-	apps, err := storeService.GetTopApps(limit, country)
+	apps, err := storeService.GetTopApps(limit, country, storeType)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
 			Error: err.Error(),
@@ -2144,8 +2482,9 @@ func handleSearchApps(c *gin.Context) {
 
 	limit := c.DefaultQuery("limit", "10")
 	country := c.DefaultQuery("country", "us")
+	storeType := c.DefaultQuery("store", "iphone")
 
-	apps, err := storeService.SearchApps(keyword, limit, country)
+	apps, err := storeService.SearchApps(keyword, limit, country, storeType)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
 			Error: err.Error(),
@@ -2610,6 +2949,30 @@ func handlePairDevice(c *gin.Context) {
 	logger.Info().Str("udid", udid).Msg("Device paired successfully")
 	c.JSON(http.StatusOK, models.SuccessResponse{
 		Message: "Device paired successfully",
+	})
+}
+
+func handleSetWiFiDebugging(c *gin.Context) {
+	udid := c.Param("udid")
+	var req struct {
+		Enabled *bool `json:"enabled" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "enabled must be a boolean"})
+		return
+	}
+
+	if err := deviceService.SetWiFiDebugging(udid, *req.Enabled); err != nil {
+		logger.Error().Err(err).Str("udid", udid).Bool("enabled", *req.Enabled).Msg("Failed to configure Wi-Fi debugging")
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error: fmt.Sprintf("Failed to configure Wi-Fi debugging: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"enabled": *req.Enabled,
 	})
 }
 

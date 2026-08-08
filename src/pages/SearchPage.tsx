@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Search, Loader2, Package, Download, Star, Globe, ArrowLeft, ChevronDown, ChevronUp, History, ShoppingCart, BarChart2, RefreshCw, Check } from "lucide-react";
+import { Search, Loader2, Package, Download, Star, Globe, ArrowLeft, ChevronDown, ChevronUp, History, ShoppingCart, BarChart2, RefreshCw, Check, Smartphone, Tablet } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useErrorStore } from "../store/errorStore";
 import { useAccountStore, handleTokenExpired } from "../store/accountStore";
@@ -8,7 +8,7 @@ import VersionHistoryDialog from "../components/VersionHistoryDialog";
 import CopyButton from "../components/CopyButton";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useDebounce } from "react-use";
-import { goServiceClient, AppSearchResult, TokenExpiredError } from "../lib/goService";
+import { goServiceClient, AppSearchResult, AppStoreType, TokenExpiredError } from "../lib/goService";
 import { useDownloadStore } from "../store/downloadStore";
 import PageLoading from "../components/PageLoading";
 import Button3D from "../components/Button3D";
@@ -18,6 +18,14 @@ const DISPLAY_PAGE_SIZE = 20;
 const SUBTITLE_VIEWPORT_BATCH_SIZE = 16;
 const SUBTITLE_VIEWPORT_PREFETCH_SIZE = 6;
 const SUBTITLE_REQUEST_BATCH_SIZE = 2;
+
+const getDeviceCompatibility = (supportedDevices?: string[]) => {
+  const deviceNames = (supportedDevices || []).map((device) => device.toLowerCase());
+  return {
+    iphone: deviceNames.some((device) => device.startsWith("iphone")),
+    ipad: deviceNames.some((device) => device.startsWith("ipad")),
+  };
+};
 
 export default function SearchPage() {
   const { t } = useTranslation();
@@ -30,6 +38,7 @@ export default function SearchPage() {
   const [licenseStatus, setLicenseStatus] = useState<Record<string, { has_license: boolean; is_checking: boolean }>>({});
   const [countryCode, setCountryCode] = useState<string | null>(null);
   const [selectedCountryCode, setSelectedCountryCode] = useState<string | null>(null);
+  const [storeType, setStoreType] = useState<AppStoreType>("iphone");
   const [showCountryDropdown, setShowCountryDropdown] = useState(false);
   const countryDropdownRef = useRef<HTMLDivElement>(null);
   const [displayedResults, setDisplayedResults] = useState<AppSearchResult[]>([]); // Results for display
@@ -63,6 +72,7 @@ export default function SearchPage() {
   const listContainerRef = useRef<HTMLDivElement>(null);
   const shouldShowSuggestionsRef = useRef<boolean>(true);
   const prevCountryCodeRef = useRef<string | null>(null);
+  const prevStoreTypeRef = useRef<AppStoreType>("iphone");
   const suggestionItemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const subtitleCacheRef = useRef<Record<string, string>>({});
   const subtitleInFlightRef = useRef<Set<string>>(new Set());
@@ -149,28 +159,22 @@ export default function SearchPage() {
     'KR', 'IT', 'ES', 'BR', 'IN', 'RU', 'MX', 'TW', 'HK', 'SG'
   ];
 
-  // Load country code and top apps on mount
   useEffect(() => {
     if (isAuthenticated && selectedAccount?.email) {
       loadCountryCode();
     }
-    loadTopApps();
   }, [isAuthenticated, selectedAccount]);
 
-  // Reload top apps when country code changes (from loadCountryCode or user selection)
   useEffect(() => {
-    const effectiveCountryCode = selectedCountryCode || countryCode;
-    if (effectiveCountryCode !== null) {
-      loadTopApps();
-    }
-  }, [countryCode, selectedCountryCode]);
+    loadTopApps();
+  }, [countryCode, selectedCountryCode, storeType]);
 
   const loadTopApps = async () => {
     setIsLoadingTopApps(true);
     setTopAppsError(null);
     try {
       const effectiveCountryCode = selectedCountryCode || countryCode || 'us';
-      const apps = await goServiceClient.getTopApps(effectiveCountryCode, 50);
+      const apps = await goServiceClient.getTopApps(effectiveCountryCode, 50, storeType);
       const hydratedApps = apps.map((app) => ({
         ...app,
         subtitle: app.subtitle || subtitleCacheRef.current[app.bundle_id] || app.subtitle,
@@ -190,14 +194,15 @@ export default function SearchPage() {
     const effectiveCountry = selectedCountryCode || countryCode || null;
     const countryChanged = prevCountryCodeRef.current !== effectiveCountry;
     const hadPrevCountry = prevCountryCodeRef.current !== null;
+    const storeChanged = prevStoreTypeRef.current !== storeType;
 
-    // If country changed and user has searched before, re-search automatically
-    if (countryChanged && hadPrevCountry && searchQuery.trim() && appStoreResults.length > 0) {
+    if ((countryChanged && hadPrevCountry || storeChanged) && searchQuery.trim() && appStoreResults.length > 0) {
       handleSearch(undefined, searchQuery);
     }
 
     prevCountryCodeRef.current = effectiveCountry;
-  }, [countryCode, selectedCountryCode]);
+    prevStoreTypeRef.current = storeType;
+  }, [countryCode, selectedCountryCode, storeType]);
 
   // Infinite scroll observer
   useEffect(() => {
@@ -278,7 +283,7 @@ export default function SearchPage() {
       setAppStoreResults([]);
       setDisplayedResults([]);
     }
-  }, 300, [searchQuery, selectedCountryCode, countryCode]);
+  }, 300, [searchQuery, selectedCountryCode, countryCode, storeType]);
 
   // Show loading state immediately when user types
   useEffect(() => {
@@ -327,7 +332,7 @@ export default function SearchPage() {
     const effectiveCountryCode = selectedCountryCode || countryCode || 'US';
     
     try {
-      const results = await goServiceClient.searchApps(query, effectiveCountryCode, 5);
+      const results = await goServiceClient.searchApps(query, effectiveCountryCode, 5, storeType);
       const filteredResults = results.filter(app => app.id !== 0 && app.name !== "");
       const hydratedResults = filteredResults.map((app) => ({
         ...app,
@@ -383,7 +388,7 @@ export default function SearchPage() {
     setHasMore(false);
     try {
       const effectiveCountryCode = selectedCountryCode || countryCode || 'US';
-      const results = await goServiceClient.searchApps(query, effectiveCountryCode, SEARCH_RESULTS_LIMIT);
+      const results = await goServiceClient.searchApps(query, effectiveCountryCode, SEARCH_RESULTS_LIMIT, storeType);
       const filteredResults = results.filter(app => app.id !== 0 && app.name !== "");
       const hydratedResults = filteredResults.map((app) => ({
         ...app,
@@ -655,6 +660,8 @@ export default function SearchPage() {
     container.addEventListener('scroll', handleListScroll, { passive: true });
     return () => container.removeEventListener('scroll', handleListScroll);
   }, [countryCode, selectedCountryCode, searchQuery, displayedResults, topApps]);
+
+  const selectedAppDeviceCompatibility = getDeviceCompatibility(selectedStoreApp?.supported_devices);
 
   return (
     <>
@@ -933,12 +940,26 @@ export default function SearchPage() {
                       </div>
                     )}
 
-                    {selectedStoreApp.file_size_formatted && (
-                      <div className="p-3 bg-gray-50 rounded-lg">
-                        <div className="text-xs text-gray-500 mb-1.5">{t('common.fileSize')}</div>
-                        <div className="text-sm text-gray-900">{selectedStoreApp.file_size_formatted}</div>
+                    <div className="p-3 bg-gray-50 rounded-lg">
+                      <div className="text-xs text-gray-500 mb-1.5">{t('search.deviceCompatibility')}</div>
+                      <div className="flex flex-wrap items-center gap-2 text-sm text-gray-900">
+                        {selectedAppDeviceCompatibility.iphone && (
+                          <span className="inline-flex items-center gap-1.5">
+                            <Smartphone size={15} className="text-gray-500" />
+                            {t('search.iphone')}
+                          </span>
+                        )}
+                        {selectedAppDeviceCompatibility.ipad && (
+                          <span className="inline-flex items-center gap-1.5">
+                            <Tablet size={15} className="text-gray-500" />
+                            {t('search.ipad')}
+                          </span>
+                        )}
+                        {!selectedAppDeviceCompatibility.iphone && !selectedAppDeviceCompatibility.ipad && (
+                          <span className="text-gray-500">{t('search.unknownCompatibility')}</span>
+                        )}
                       </div>
-                    )}
+                    </div>
 
                     {selectedStoreApp.minimum_os_version && (
                       <div className="p-3 bg-gray-50 rounded-lg">
@@ -971,6 +992,28 @@ export default function SearchPage() {
                 <h2 className="text-3xl font-bold text-gray-900 mb-2">{t('search.title')}</h2>
                 <p className="text-gray-500">{t('search.subtitle')}</p>
               </div>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={storeType === "ipad"}
+                  aria-label={`${t('search.iphone')} / ${t('search.ipad')}`}
+                  onClick={() => setStoreType((current) => current === "iphone" ? "ipad" : "iphone")}
+                  className="relative flex h-9 w-40 items-center rounded-lg bg-blue-50 p-1 text-sm font-medium text-blue-500 transition-colors hover:bg-blue-100 focus:outline-none focus:ring-0 focus:ring-offset-0"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-y-1 left-1 w-[calc(50%-0.25rem)] rounded-md bg-white shadow-sm transition-transform duration-200"
+                    style={{ transform: storeType === "ipad" ? "translateX(calc(100% + 4px))" : "translateX(0)" }}
+                  />
+                  <span className={`relative z-10 flex flex-1 items-center justify-center px-2 transition-colors ${storeType === "iphone" ? "text-blue-700" : ""}`}>
+                    {t('search.iphone')}
+                  </span>
+                  <span className={`relative z-10 flex flex-1 items-center justify-center px-2 transition-colors ${storeType === "ipad" ? "text-blue-700" : ""}`}>
+                    {t('search.ipad')}
+                  </span>
+                </button>
+
               <div className="relative" ref={countryDropdownRef}>
                 <button
                   onClick={() => setShowCountryDropdown(!showCountryDropdown)}
@@ -1019,6 +1062,7 @@ export default function SearchPage() {
                     </div>
                   </div>
                 )}
+              </div>
               </div>
             </div>
 

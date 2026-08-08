@@ -304,6 +304,7 @@ func (s *Service) ListDevices() ([]models.DeviceInfo, error) {
 		// Get additional fields via lockdown connection
 		phoneNumber := ""
 		humanReadableVersion := ""
+		locale := ""
 		icloudEnabled := false
 		appleIDLocked := false
 		imsi := ""
@@ -318,10 +319,14 @@ func (s *Service) ListDevices() ([]models.DeviceInfo, error) {
 		batteryIsCharging := false
 		batteryExternalConnected := false
 		batteryFullyCharged := false
+		wifiDebuggingEnabled := false
 
 		var storageInfo *models.StorageInfo
 		lockdownConn, err := ios.ConnectLockdownWithSession(*device)
 		if err == nil {
+			if val, err := lockdownConn.GetValueForDomain("EnableWifiDebugging", "com.apple.mobile.wireless_lockdown"); err == nil {
+				wifiDebuggingEnabled, _ = val.(bool)
+			}
 			// Try to get PhoneNumber
 			if val, err := lockdownConn.GetValueForDomain("PhoneNumber", ""); err == nil {
 				phoneNumber = getStringValue(val)
@@ -329,6 +334,9 @@ func (s *Service) ListDevices() ([]models.DeviceInfo, error) {
 			// Try to get HumanReadableProductVersionString (prefer this over ProductVersion)
 			if val, err := lockdownConn.GetValueForDomain("HumanReadableProductVersionString", ""); err == nil {
 				humanReadableVersion = getStringValue(val)
+			}
+			if val, err := lockdownConn.GetValueForDomain("Locale", "com.apple.international"); err == nil {
+				locale = getStringValue(val)
 			}
 			// Try to get RegulatoryModelNumber (e.g. A2634)
 			if val, err := lockdownConn.GetValueForDomain("RegulatoryModelNumber", ""); err == nil {
@@ -472,16 +480,45 @@ func (s *Service) ListDevices() ([]models.DeviceInfo, error) {
 			productName = regulatoryModel
 		}
 
+		rawData := make(map[string]interface{})
+		if values, err := ios.GetValuesPlist(*device); err == nil && len(values) > 0 {
+			rawData = values
+		} else if jsonBytes, err := json.Marshal(allValues.Value); err == nil {
+			json.Unmarshal(jsonBytes, &rawData)
+		}
+		if humanReadableVersion != "" {
+			rawData["HumanReadableProductVersionString"] = humanReadableVersion
+		}
+		if locale != "" {
+			rawData["Locale"] = locale
+		}
+		if regulatoryModel != "" {
+			rawData["RegulatoryModelNumber"] = regulatoryModel
+		}
+		if imei2 != "" {
+			rawData["InternationalMobileEquipmentIdentity2"] = imei2
+		}
+		if imsi != "" {
+			rawData["InternationalMobileSubscriberIdentity"] = imsi
+		}
+		if phoneNumber != "" {
+			rawData["PhoneNumber"] = phoneNumber
+		}
+		if simStatus != "" {
+			rawData["SIMStatus"] = simStatus
+		}
+		if simTrayStatus != "" {
+			rawData["SIMTrayStatus"] = simTrayStatus
+		}
 		// Extract detailed hardware information
-		hardwareDetails := extractHardwareDetails(allValues.Value, lockdownConn, device)
+		hardwareDetails := extractHardwareDetails(rawData, lockdownConn, device)
 		if lockdownConn != nil {
 			lockdownConn.Close()
 		}
-
-		// Convert allValues to map for raw data
-		rawData := make(map[string]interface{})
-		if jsonBytes, err := json.Marshal(allValues.Value); err == nil {
-			json.Unmarshal(jsonBytes, &rawData)
+		for _, key := range []string{"BasebandRegionSKU", "BasebandSerialNumber", "ChipSerialNo", "PkHash", "SoftwareBehavior", "ProximitySensorCalibration"} {
+			if value, ok := rawData[key]; ok {
+				rawData[key] = formatBinaryIdentifier(value)
+			}
 		}
 
 		// Add hardware_details to raw_data for display in raw data tab
@@ -494,43 +531,44 @@ func (s *Service) ListDevices() ([]models.DeviceInfo, error) {
 		}
 
 		deviceInfo := models.DeviceInfo{
-			UDID:             udid,
-			Name:             name,
-			Model:            model,
-			Version:          version,
-			Color:            color,
-			EnclosureColor:   enclosureColor,
-			ProductType:      productType,
-			ProductName:      productName,
-			RegulatoryModel:  regulatoryModel,
-			BuildVersion:     buildVersion,
-			FirmwareVersion:  firmwareVersion,
-			SerialNumber:     serialNumber,
-			IMEI:             imei,
-			IMEI2:            imei2,
-			PhoneNumber:      phoneNumber,
-			ECID:             ecid,
-			RegionInfo:       regionInfo,
-			ModelNumber:      modelNumber,
-			SalesModel:       salesModel,
-			TimeZone:         timeZone,
-			ActivationState:  activationState,
-			IsPaired:         true,
-			ConnectionType:   normalizeConnectionType(device.Properties.ConnectionType),
-			CPUArchitecture:  cpuArch,
-			WiFiAddress:      wifiAddr,
-			EthernetAddress:  ethernetAddress,
-			BluetoothAddress: btAddr,
-			ICloudEnabled:    icloudEnabled,
-			AppleIDLocked:    appleIDLocked,
-			IMSI:             imsi,
-			SIMStatus:        simStatus,
-			SIMTrayStatus:    simTrayStatus,
-			SIM1Info:         sim1Info,
-			SIM2Info:         sim2Info,
-			StorageInfo:      storageInfo,
-			HardwareDetails:  hardwareDetails,
-			RawData:          rawData,
+			UDID:                 udid,
+			Name:                 name,
+			Model:                model,
+			Version:              version,
+			Color:                color,
+			EnclosureColor:       enclosureColor,
+			ProductType:          productType,
+			ProductName:          productName,
+			RegulatoryModel:      regulatoryModel,
+			BuildVersion:         buildVersion,
+			FirmwareVersion:      firmwareVersion,
+			SerialNumber:         serialNumber,
+			IMEI:                 imei,
+			IMEI2:                imei2,
+			PhoneNumber:          phoneNumber,
+			ECID:                 ecid,
+			RegionInfo:           regionInfo,
+			ModelNumber:          modelNumber,
+			SalesModel:           salesModel,
+			TimeZone:             timeZone,
+			ActivationState:      activationState,
+			IsPaired:             true,
+			ConnectionType:       normalizeConnectionType(device.Properties.ConnectionType),
+			WiFiDebuggingEnabled: wifiDebuggingEnabled,
+			CPUArchitecture:      cpuArch,
+			WiFiAddress:          wifiAddr,
+			EthernetAddress:      ethernetAddress,
+			BluetoothAddress:     btAddr,
+			ICloudEnabled:        icloudEnabled,
+			AppleIDLocked:        appleIDLocked,
+			IMSI:                 imsi,
+			SIMStatus:            simStatus,
+			SIMTrayStatus:        simTrayStatus,
+			SIM1Info:             sim1Info,
+			SIM2Info:             sim2Info,
+			StorageInfo:          storageInfo,
+			HardwareDetails:      hardwareDetails,
+			RawData:              rawData,
 			// Note: Battery info, jailbreak detection, and warranty info
 			// require additional API calls or cannot be reliably detected
 			IsJailbroken:             false, // Placeholder
@@ -799,48 +837,48 @@ func (s *Service) GenerateRandomDeviceInfo() models.DeviceInfo {
 	serialNumber := fmt.Sprintf("F%d%s", randomInt(900)+100, randomString(8))
 
 	return models.DeviceInfo{
-		UDID:               udid,
-		Name:               selectedName,
-		Model:              selectedModel,
-		Version:            selectedVersion,
-		Color:              "1",
-		EnclosureColor:     "1",
-		ProductType:        selectedModel,
-		ProductName:        fmt.Sprintf("A%d", randomInt(3000)+1000),
-		RegulatoryModel:    fmt.Sprintf("A%d", randomInt(3000)+1000),
-		BuildVersion:       fmt.Sprintf("%dH%d", randomInt(30)+20, randomInt(100)),
-		FirmwareVersion:    fmt.Sprintf("iBoot-%d.%d.%d", randomInt(15000)+10000, randomInt(200)+100, randomInt(100)),
-		SerialNumber:       serialNumber,
-		IMEI:               fmt.Sprintf("35%d", randomInt(10000000000000)),
-		IMEI2:              fmt.Sprintf("35%d", randomInt(10000000000000)),
-		PhoneNumber:        fmt.Sprintf("+86138%08d", randomInt(100000000)),
-		RegionInfo:         selectedRegion,
-		ModelNumber:        fmt.Sprintf("ML%s%d", randomString(1), randomInt(10)),
-		SalesModel:         fmt.Sprintf("ML%s%d %s", randomString(1), randomInt(10), selectedRegion),
-		TimeZone:           "Asia/Shanghai",
-		ActivationState:    "Simulated",
-		IsPaired:           true,
-		IsJailbroken:       false,
-		CPUArchitecture:    "arm64e",
+		UDID:                     udid,
+		Name:                     selectedName,
+		Model:                    selectedModel,
+		Version:                  selectedVersion,
+		Color:                    "1",
+		EnclosureColor:           "1",
+		ProductType:              selectedModel,
+		ProductName:              fmt.Sprintf("A%d", randomInt(3000)+1000),
+		RegulatoryModel:          fmt.Sprintf("A%d", randomInt(3000)+1000),
+		BuildVersion:             fmt.Sprintf("%dH%d", randomInt(30)+20, randomInt(100)),
+		FirmwareVersion:          fmt.Sprintf("iBoot-%d.%d.%d", randomInt(15000)+10000, randomInt(200)+100, randomInt(100)),
+		SerialNumber:             serialNumber,
+		IMEI:                     fmt.Sprintf("35%d", randomInt(10000000000000)),
+		IMEI2:                    fmt.Sprintf("35%d", randomInt(10000000000000)),
+		PhoneNumber:              fmt.Sprintf("+86138%08d", randomInt(100000000)),
+		RegionInfo:               selectedRegion,
+		ModelNumber:              fmt.Sprintf("ML%s%d", randomString(1), randomInt(10)),
+		SalesModel:               fmt.Sprintf("ML%s%d %s", randomString(1), randomInt(10), selectedRegion),
+		TimeZone:                 "Asia/Shanghai",
+		ActivationState:          "Simulated",
+		IsPaired:                 true,
+		IsJailbroken:             false,
+		CPUArchitecture:          "arm64e",
 		BatteryLevel:             randomInt(100),
 		BatteryIsCharging:        false,
 		BatteryExternalConnected: false,
 		BatteryFullyCharged:      false,
 		BatteryHealth:            randomInt(20) + 80,
 		BatteryCycleCount:        randomInt(500),
-		ManufactureDate:    time.Now().AddDate(-randomInt(3), -randomInt(12), 0).Format("2006-01-02"),
-		WarrantyExpiration: time.Now().AddDate(randomInt(2), 0, 0).Format("2006-01-02"),
-		AppleIDLocked:      false,
-		ICloudEnabled:      randomInt(2) == 1,
-		WiFiAddress:        fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256)),
-		EthernetAddress:    fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256)),
-		BluetoothAddress:   fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256)),
-		IMSI:               fmt.Sprintf("4600%d", randomInt(10000000000)),
-		SIMStatus:          "kCTSIMSupportSIMStatusReady",
-		SIMTrayStatus:      "kCTSIMSupportSIMTrayInsertedWithSIM",
-		SIM1Info:           "ChinaTelecom_USIM_cn",
-		SIM2Info:           "ChinaMobile_USIM_cn",
-		RawData:            map[string]interface{}{"simulated": true, "random": true},
+		ManufactureDate:          time.Now().AddDate(-randomInt(3), -randomInt(12), 0).Format("2006-01-02"),
+		WarrantyExpiration:       time.Now().AddDate(randomInt(2), 0, 0).Format("2006-01-02"),
+		AppleIDLocked:            false,
+		ICloudEnabled:            randomInt(2) == 1,
+		WiFiAddress:              fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256)),
+		EthernetAddress:          fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256)),
+		BluetoothAddress:         fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256)),
+		IMSI:                     fmt.Sprintf("4600%d", randomInt(10000000000)),
+		SIMStatus:                "kCTSIMSupportSIMStatusReady",
+		SIMTrayStatus:            "kCTSIMSupportSIMTrayInsertedWithSIM",
+		SIM1Info:                 "ChinaTelecom_USIM_cn",
+		SIM2Info:                 "ChinaMobile_USIM_cn",
+		RawData:                  map[string]interface{}{"simulated": true, "random": true},
 	}
 }
 
@@ -1215,6 +1253,29 @@ func (s *Service) PairDevice(udid string) error {
 	return nil
 }
 
+func (s *Service) SetWiFiDebugging(udid string, enabled bool) error {
+	device, err := s.GetDeviceByUDID(udid)
+	if err != nil {
+		return err
+	}
+
+	if strings.ToLower(strings.TrimSpace(device.Properties.ConnectionType)) != "usb" {
+		return fmt.Errorf("Wi-Fi debugging can only be configured over USB")
+	}
+
+	lockdownConn, err := ios.ConnectLockdownWithSession(*device)
+	if err != nil {
+		return fmt.Errorf("failed to connect lockdown: %w", err)
+	}
+	defer lockdownConn.Close()
+
+	if err := lockdownConn.SetValueForDomain("EnableWifiDebugging", "com.apple.mobile.wireless_lockdown", enabled); err != nil {
+		return fmt.Errorf("failed to set Wi-Fi debugging: %w", err)
+	}
+
+	return nil
+}
+
 // GetStorageInfo retrieves detailed storage information from device
 func (s *Service) GetStorageInfo(udid string) (*models.StorageInfo, error) {
 	device, err := s.GetDeviceByUDID(udid)
@@ -1257,12 +1318,14 @@ func (s *Service) GetStorageInfo(udid string) (*models.StorageInfo, error) {
 // parseStorageInfo parses disk usage data into StorageInfo struct
 func parseStorageInfo(diskUsage interface{}, diskUsageFactory interface{}) *models.StorageInfo {
 	info := &models.StorageInfo{}
+	hasAmountDataAvailable := false
 
 	if diskUsageMap, ok := diskUsage.(map[string]interface{}); ok {
 		info.TotalDiskCapacity = getUint64Value(diskUsageMap["TotalDiskCapacity"])
 		info.TotalDataCapacity = getUint64Value(diskUsageMap["TotalDataCapacity"])
 		info.TotalSystemCapacity = getUint64Value(diskUsageMap["TotalSystemCapacity"])
 		info.TotalDataAvailable = getUint64Value(diskUsageMap["TotalDataAvailable"])
+		_, hasAmountDataAvailable = diskUsageMap["AmountDataAvailable"]
 		info.AmountDataAvailable = getUint64Value(diskUsageMap["AmountDataAvailable"])
 		info.AmountDataReserved = getUint64Value(diskUsageMap["AmountDataReserved"])
 		info.TotalSystemAvailable = getUint64Value(diskUsageMap["TotalSystemAvailable"])
@@ -1282,54 +1345,24 @@ func parseStorageInfo(diskUsage interface{}, diskUsageFactory interface{}) *mode
 		info.MediaCacheUsage = getUint64Value(factoryMap["MediaCacheUsage"])
 	}
 
-	// Disk accounting notes (lockdown com.apple.disk_usage):
-	//
-	//   TotalDiskCapacity     marketing total (e.g. 256_000_000_000)
-	//   TotalDataCapacity     user-data volume size
-	//   AmountDataAvailable   currently free blocks on the data volume
-	//   AmountDataReserved    reserved block (often 200 MiB)
-	//   TotalDataAvailable    free + heavily inflated "purgeable" on iOS 17+
-	//                         DO NOT use for used = capacity - free
-	//
-	// Dynamic data-volume used:
-	//   usedData = TotalDataCapacity - AmountDataAvailable
-	//
-	// When the volume is nearly full, system UIs commonly present a precise
-	// "used" that matches:
-	//   TotalDataCapacity - AmountDataReserved
-	// (e.g. 247107719168 - 209715200 = 246898003968 → 246.89 GB).
-	// Fall back to that once free space is below ~5% of the data volume.
-	totalForDisplay := info.TotalDiskCapacity
+	totalForDisplay := info.TotalDataCapacity
 	if totalForDisplay == 0 {
-		totalForDisplay = info.TotalDataCapacity
+		totalForDisplay = info.TotalDiskCapacity
 	}
 
 	freeOnData := info.AmountDataAvailable
-	if freeOnData == 0 {
-		// Older iOS builds sometimes only populate TotalDataAvailable.
+	if !hasAmountDataAvailable {
 		freeOnData = info.TotalDataAvailable
 	}
 
-	var usedSpace uint64
-	if info.TotalDataCapacity > 0 {
-		nearlyFullDataVolume := freeOnData > 0 && freeOnData <= info.TotalDataCapacity/20
-		if nearlyFullDataVolume && info.TotalDataCapacity > info.AmountDataReserved {
-			usedSpace = info.TotalDataCapacity - info.AmountDataReserved
-		} else if info.TotalDataCapacity > freeOnData {
-			usedSpace = info.TotalDataCapacity - freeOnData
-		}
-	} else if totalForDisplay > freeOnData {
-		usedSpace = totalForDisplay - freeOnData
+	if totalForDisplay > 0 && freeOnData > totalForDisplay {
+		freeOnData = totalForDisplay
 	}
 
-	// Keep the three numbers self-consistent for the progress bar:
-	// used + available == total (marketing disk capacity when present).
-	var availableForDisplay uint64
-	if totalForDisplay > usedSpace {
-		availableForDisplay = totalForDisplay - usedSpace
-	} else if totalForDisplay > 0 {
-		usedSpace = totalForDisplay
-		availableForDisplay = 0
+	var usedSpace, availableForDisplay uint64
+	if totalForDisplay > 0 {
+		availableForDisplay = freeOnData
+		usedSpace = totalForDisplay - availableForDisplay
 	} else {
 		availableForDisplay = freeOnData
 	}

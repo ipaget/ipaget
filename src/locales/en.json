@@ -88,7 +88,14 @@
     "topCharts": "Top Charts",
     "failedToLoadTopCharts": "Failed to load top charts",
     "hotRecommendations": "Hot Recommendations",
-    "currentAccountRegion": "Current Account Region"
+    "currentAccountRegion": "Current Account Region",
+    "iphoneStore": "iPhone Store",
+    "ipadStore": "iPad Store",
+    "switchStore": "Switch store",
+    "deviceCompatibility": "Device compatibility",
+    "iphone": "iPhone",
+    "ipad": "iPad",
+    "unknownCompatibility": "Unknown"
   },
   "downloads": {
     "title": "Downloads",
@@ -233,6 +240,7 @@
     "dropIpaOnly": "Only IPA or TIPA files are supported",
     "installingFile": "Installing {{name}}...",
     "showSystemApps": "Show System Apps",
+    "showSharedLibraries": "Show Shared Libraries",
     "details": "Details",
     "appDetails": "App Details",
     "buildMachineOS": "Build Machine OS",
@@ -287,6 +295,9 @@
     "shutdownRequested": "Device shut down successfully",
     "restartFailed": "Failed to restart device",
     "shutdownFailed": "Failed to shut down device",
+    "wifiDebuggingEnabled": "Wi-Fi connection enabled",
+    "wifiDebuggingDisabled": "Wi-Fi connection disabled",
+    "wifiDebuggingFailed": "Failed to configure Wi-Fi connection",
     "noRawData": "No raw data available",
     "noSearchResults": "No search results found",
     "deviceLocked": "Device Locked",
@@ -530,6 +541,9 @@
     "deviceInfo": "Device Info",
     "iosVersion": "iOS Version",
     "connectionType": "Connection",
+    "wifiDebugging": "Wi-Fi Connection",
+    "wifiDebuggingUsbHint": "Keep the USB connection active to change this setting",
+    "wifiDebuggingUsbRequired": "Connect the device over USB first",
     "firmwareVersion": "Firmware Version (iBoot)",
     "deviceColor": "Device Color",
     "activationState": "Activation State",
@@ -575,7 +589,24 @@
     "manufactureDate": "Manufacture Date",
     "warrantyExpiration": "Warranty Expiration",
     "jailbroken": "Jailbroken",
-    "notJailbroken": "Not Jailbroken"
+    "notJailbroken": "Not Jailbroken",
+    "screenSizeInches": "{{size}} inches",
+    "coprocessor": {
+      "none": "None",
+      "integrated": "Integrated into SoC"
+    },
+    "diskType": {
+      "flash": "Flash",
+      "nvme": "NVMe",
+      "emmc": "eMMC"
+    },
+    "salesType": {
+      "retail": "Retail",
+      "replacement": "Replacement",
+      "refurbished": "Refurbished",
+      "personalized": "Personalized",
+      "demo": "Demo"
+    }
   },
   "activationStates": {
     "Activated": "Activated",

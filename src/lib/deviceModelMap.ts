@@ -492,3 +492,20 @@ export function getDeviceModelName(productType: string, language?: string): stri
   return map[productType] || productType;
 }
 
+const deviceSalesTypeMap: Record<string, string> = {
+  M: "retail",
+  N: "replacement",
+  F: "refurbished",
+  P: "personalized",
+  "3": "demo",
+};
+
+/**
+ * Determine sales type from the model number prefix (e.g. "MQ0X3CH/A").
+ * First character: M=retail, N=replacement, F=refurbished, P=personalized, 3=demo unit.
+ */
+export function getDeviceSalesType(modelNumber: string | null | undefined): string | null {
+  if (!modelNumber) return null;
+  return deviceSalesTypeMap[modelNumber.trim().charAt(0).toUpperCase()] || null;
+}
+

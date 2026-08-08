@@ -2,9 +2,9 @@ package store
 
 import (
 	"bytes"
-	"crypto/rand"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
@@ -38,8 +38,8 @@ import (
 )
 
 const (
-	keychainServiceName = "ipaget-service"
-	keychainAccountKey  = "account"
+	keychainServiceName         = "ipaget-service"
+	keychainAccountKey          = "account"
 	appSubtitleFetchConcurrency = 8
 	appSubtitleFetchTimeout     = 8 * time.Second
 )
@@ -1112,10 +1112,10 @@ func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appS
 	}
 
 	log.Warn().
-	Err(appStoreErr).
-	Str("email", email).
-	Bool("has_authcode", strings.TrimSpace(appStoreAuthCode) != "").
-	Msg("ipatool login failed after successful GSA auth; falling back to GSA-only session")
+		Err(appStoreErr).
+		Str("email", email).
+		Bool("has_authcode", strings.TrimSpace(appStoreAuthCode) != "").
+		Msg("ipatool login failed after successful GSA auth; falling back to GSA-only session")
 
 	fallbackStorefront := "us"
 	if spdData != nil {
@@ -1558,7 +1558,7 @@ func (s *Service) ListAccounts() ([]string, error) {
 	return accounts, nil
 }
 
-func (s *Service) SearchApps(keyword, limit, countryCode string) ([]models.AppSearchResult, error) {
+func (s *Service) SearchApps(keyword, limit, countryCode, storeType string) ([]models.AppSearchResult, error) {
 	limitInt := int64(10)
 	fmt.Sscanf(limit, "%d", &limitInt)
 
@@ -1571,9 +1571,10 @@ func (s *Service) SearchApps(keyword, limit, countryCode string) ([]models.AppSe
 	}
 
 	output, err := s.appStore.Search(appstore.SearchInput{
-		Account: account,
-		Term:    keyword,
-		Limit:   limitInt,
+		Account:   account,
+		Term:      keyword,
+		Limit:     limitInt,
+		StoreType: storeType,
 	})
 
 	if err != nil {
@@ -1621,6 +1622,13 @@ func countryCodeToStoreFront(countryCode string) string {
 	return "143441-1,29"
 }
 
+func appStoreEntityForStore(storeType string) string {
+	if strings.EqualFold(storeType, "ipad") {
+		return "iPadSoftware"
+	}
+	return "software"
+}
+
 func (s *Service) GetAppDetails(bundleID, email string) (*models.AppDetails, error) {
 	account, err := s.getAccount(email)
 	if err != nil {
@@ -1640,7 +1648,6 @@ func (s *Service) GetAppDetails(bundleID, email string) (*models.AppDetails, err
 		AppSearchResult:   s.convertAppToSearchResult(&app),
 		Screenshots:       app.ScreenshotUrls,
 		ScreenshotsIPad:   app.IpadScreenshotUrls,
-		SupportedDevices:  app.SupportedDevices,
 		LanguageCodes:     app.LanguageCodesISO2A,
 		HasInAppPurchases: contains(app.Features, "iosUniversal"),
 	}
@@ -2157,7 +2164,7 @@ type ITunesLookupApp struct {
 	LanguageCodesISO2A        []string `json:"languageCodesISO2A"`
 }
 
-func (s *Service) GetTopApps(limit int, country string) ([]models.AppSearchResult, error) {
+func (s *Service) GetTopApps(limit int, country, storeType string) ([]models.AppSearchResult, error) {
 	if country == "" {
 		country = "us"
 	}
@@ -2193,7 +2200,7 @@ func (s *Service) GetTopApps(limit int, country string) ([]models.AppSearchResul
 	ids := chartsResp.ResultIds
 
 	// 3. Call iTunes Lookup API
-	lookupURL := fmt.Sprintf("https://itunes.apple.com/lookup?id=%s&country=%s", strings.Join(ids, ","), country)
+	lookupURL := fmt.Sprintf("https://itunes.apple.com/lookup?entity=%s&id=%s&country=%s", appStoreEntityForStore(storeType), strings.Join(ids, ","), country)
 	lookupResp, err := appSubtitleHTTPClient.Get(lookupURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch iTunes lookup: %w", err)
@@ -2241,6 +2248,7 @@ func (s *Service) GetTopApps(limit int, country string) ([]models.AppSearchResul
 			MinimumOSVersion:          app.MinimumOsVersion,
 			ReleaseDate:               app.ReleaseDate,
 			CurrentVersionReleaseDate: app.CurrentVersionReleaseDate,
+			SupportedDevices:          app.SupportedDevices,
 		}
 		resultsMap[fmt.Sprintf("%d", app.TrackId)] = res
 	}
@@ -2669,12 +2677,12 @@ func (s *Service) loadStoredAccount(email string) (*appstore.Account, error) {
 
 func hasUsableAppStoreSession(account *appstore.Account) bool {
 	if account == nil {
-	return false
+		return false
 	}
 
 	return len(strings.TrimSpace(account.PasswordToken)) > 0 &&
-	len(strings.TrimSpace(account.DirectoryServicesID)) > 0 &&
-	len(strings.TrimSpace(account.StoreFront)) > 0
+		len(strings.TrimSpace(account.DirectoryServicesID)) > 0 &&
+		len(strings.TrimSpace(account.StoreFront)) > 0
 }
 
 func (s *Service) getAccount(email string) (*appstore.Account, error) {
@@ -2977,6 +2985,7 @@ func (s *Service) convertAppToSearchResult(app *appstore.App) models.AppSearchRe
 		MinimumOSVersion:          app.MinimumOsVersion,
 		ReleaseDate:               app.ReleaseDate,
 		CurrentVersionReleaseDate: app.CurrentVersionReleaseDate,
+		SupportedDevices:          app.SupportedDevices,
 	}
 }
 
