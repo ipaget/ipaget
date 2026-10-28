@@ -80,12 +80,21 @@ jobs:
             upx -9 "$_"
           }
 
+      - name: Name portable exe
+        shell: pwsh
+        run: |
+          $label = if ('${{ matrix.target }}' -like 'i686*') { 'windows-x86' } else { 'windows-x64' }
+          Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/*.exe" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName (Join-Path $_.DirectoryName "iPAGet_${label}_portable.exe") -Force
+          }
+          Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/iPAGet_*_portable.exe" | Select-Object -ExpandProperty Name
+
       - name: Upload artifacts (portable exe)
         uses: actions/upload-artifact@v4
         with:
           name: windows-${{ matrix.target }}-portable
           path: |
-            src-tauri/target/${{ matrix.target }}/release/*.exe
+            src-tauri/target/${{ matrix.target }}/release/iPAGet_*_portable.exe
           if-no-files-found: error
 
       - name: Upload artifacts (msi)
@@ -188,12 +197,17 @@ jobs:
             src-tauri/target/**/bundle/appimage/*.AppImage
           if-no-files-found: error
 
+      - name: Name portable binary
+        run: |
+          cp src-tauri/target/release/ipaget iPAGet_linux-amd64-portable
+          ls -l iPAGet_linux-amd64-portable
+
       - name: Upload artifacts (portable binary)
         uses: actions/upload-artifact@v4
         with:
           name: linux-amd64-portable
           path: |
-            src-tauri/target/release/ipaget
+            iPAGet_linux-amd64-portable
           if-no-files-found: error
 
   macos-arm64:
