@@ -14,16 +14,18 @@ import (
 
 // AnisetteData represents the anisette data returned from the server
 type AnisetteData struct {
-	ClientTime string `json:"X-Apple-I-Client-Time"`
-	MD         string `json:"X-Apple-I-MD"`
-	MDM        string `json:"X-Apple-I-MD-M"`
-	MDRINFO    string `json:"X-Apple-I-MD-RINFO"`
-	MDLU       string `json:"X-Apple-I-MD-LU"`
-	SRLNO      string `json:"X-Apple-I-SRL-NO"`
-	ClientInfo string `json:"X-MMe-Client-Info"`
-	TimeZone   string `json:"X-Apple-I-TimeZone"`
-	Locale     string `json:"X-Apple-Locale"`
-	DeviceID   string `json:"X-Mme-Device-Id"`
+	ClientTime    string `json:"X-Apple-I-Client-Time"`
+	MD            string `json:"X-Apple-I-MD"`
+	MDM           string `json:"X-Apple-I-MD-M"`
+	MDRINFO       string `json:"X-Apple-I-MD-RINFO"`
+	MDLU          string `json:"X-Apple-I-MD-LU"`
+	SRLNO         string `json:"X-Apple-I-SRL-NO"`
+	ClientInfo    string `json:"X-MMe-Client-Info"`
+	TimeZone      string `json:"X-Apple-I-TimeZone"`
+	Locale        string `json:"X-Apple-Locale"`
+	DeviceID      string `json:"X-Mme-Device-Id"`
+	UserAgent     string `json:"user_agent,omitempty"`
+	GSAServiceURL string `json:"gsa_service_url,omitempty"`
 }
 
 // FetchAnisetteData fetches anisette data from the specified server
@@ -107,6 +109,7 @@ func validateAnisetteClientTime(clientTime string) error {
 // GetDefaultAnisetteServers returns a list of default anisette servers to try
 func GetDefaultAnisetteServers() []string {
 	return []string{
+		"https://new.ani.sidestore.io",
 		"https://ani.zetx.tech",
 		"https://ani.sidestore.app",
 	}

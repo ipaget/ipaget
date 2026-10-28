@@ -498,6 +498,10 @@ func (s *Service) GetIPADetails(ipaPath string, progressCallback func(progress f
 		Properties:      properties,
 	}
 
+	if info, err := s.ParseIPA(ipaPath); err == nil && info.IconBase64 != "" {
+		details.IconBase64 = info.IconBase64
+	}
+
 	logger.Info().
 		Int("files_count", len(extractedFiles)).
 		Int("dylibs_count", len(dylibs)).

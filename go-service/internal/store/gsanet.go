@@ -3,10 +3,15 @@ package store
 import (
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
+	"net/url"
 	"os"
+	"strconv"
+	"sync"
 	"time"
 
 	"ipaget-service/internal/logger"
@@ -15,6 +20,221 @@ import (
 
 	"howett.net/plist"
 )
+
+// newGSATransport builds the HTTP transport used for GSA requests.
+// GSA over the local proxy fails when HTTP/2 (ALPN h2) is negotiated, so the
+// transport is pinned to HTTP/1.1 and TLS 1.2.
+func newGSATransport() *http.Transport {
+	return newGSATransportWithProxy(true)
+}
+
+func newGSATransportWithProxy(useProxy bool) *http.Transport {
+	var proxy func(*http.Request) (*url.URL, error)
+	if useProxy {
+		proxy = http.ProxyFromEnvironment
+	}
+	tlsConfig := appleTLSConfig()
+	tlsConfig.MaxVersion = tls.VersionTLS12
+	return &http.Transport{
+		Proxy:             proxy,
+		TLSClientConfig:   tlsConfig,
+		DisableKeepAlives: true,
+		ForceAttemptHTTP2: false,
+		TLSNextProto:      make(map[string]func(string, *tls.Conn) http.RoundTripper),
+	}
+}
+
+func setGSALoginHeaders(req *http.Request, hdr GSAHeaders) {
+	acceptLanguage := strings.TrimSpace(hdr.AcceptLanguage)
+	if acceptLanguage == "" {
+		acceptLanguage = "en-us"
+	}
+	req.Header.Set("Content-Type", "text/x-xml-plist")
+	req.Header.Set("Accept", "text/x-xml-plist")
+	req.Header.Set("X-Apple-App-Info", "com.apple.gs.xcode.auth")
+	req.Header.Set("X-Xcode-Version", "27.0 (27A5218g)")
+	req.Header.Set("Accept-Language", acceptLanguage)
+	userAgent := strings.TrimSpace(hdr.UserAgent)
+	if userAgent == "" {
+		userAgent = "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0"
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Connection", "close")
+	if strings.TrimSpace(hdr.XMMEClientInfo) != "" {
+		req.Header.Set("X-MMe-Client-Info", hdr.XMMEClientInfo)
+	}
+}
+
+type gsaTraceState struct {
+	mu    sync.Mutex
+	phase string
+}
+
+func (s *gsaTraceState) setPhase(phase string) {
+	s.mu.Lock()
+	s.phase = phase
+	s.mu.Unlock()
+}
+
+func (s *gsaTraceState) getPhase() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.phase == "" {
+		return "request"
+	}
+	return s.phase
+}
+
+func (s *gsaTraceState) trace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		GetConn: func(string) {
+			s.setPhase("get_conn")
+		},
+		ConnectStart: func(_, _ string) {
+			s.setPhase("connect")
+		},
+		ConnectDone: func(_, _ string, err error) {
+			if err != nil {
+				s.setPhase("connect_error")
+				return
+			}
+			s.setPhase("connected")
+		},
+		TLSHandshakeStart: func() {
+			s.setPhase("tls_handshake")
+		},
+		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
+			if err != nil {
+				s.setPhase("tls_error")
+				return
+			}
+			s.setPhase("tls_complete")
+		},
+		WroteHeaders: func() {
+			s.setPhase("wrote_headers")
+		},
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err != nil {
+				s.setPhase("write_error")
+				return
+			}
+			s.setPhase("wrote_request")
+		},
+		GotFirstResponseByte: func() {
+			s.setPhase("response")
+		},
+	}
+}
+
+func gsaProxyConfigured() bool {
+	for _, name := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func postGSALoginRequest(body []byte, hdr GSAHeaders, step string) (*http.Response, error) {
+	serviceURL := gsaServiceURL
+	if hdr.ServiceURL != "" {
+		if err := validateAppleGSAURL(hdr.ServiceURL); err != nil {
+			return nil, err
+		}
+		serviceURL = hdr.ServiceURL
+	}
+	type endpoint struct {
+		name      string
+		transport *http.Transport
+	}
+	endpoints := []endpoint{{name: "direct", transport: newGSATransportWithProxy(false)}}
+	if gsaProxyConfigured() {
+		endpoints = []endpoint{
+			{name: "proxy", transport: newGSATransportWithProxy(true)},
+			{name: "direct", transport: newGSATransportWithProxy(false)},
+		}
+	}
+
+	var lastErr error
+	for _, endpoint := range endpoints {
+		client := &http.Client{Timeout: 60 * time.Second, Transport: endpoint.transport}
+		httpReq, err := http.NewRequest("POST", serviceURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		setGSALoginHeaders(httpReq, hdr)
+		traceState := &gsaTraceState{}
+		httpReq = httpReq.WithContext(httptrace.WithClientTrace(httpReq.Context(), traceState.trace()))
+
+		resp, err := client.Do(httpReq)
+		if err == nil {
+			if endpoint.name == "direct" && len(endpoints) > 1 {
+				logger.Warn().Str("step", step).Msg("GSA request succeeded with direct connection after proxy failure")
+			}
+			return resp, nil
+		}
+		lastErr = fmt.Errorf("%s transport failed during %s: %w", endpoint.name, traceState.getPhase(), err)
+		logger.Warn().Err(lastErr).Str("step", step).Str("transport", endpoint.name).Str("phase", traceState.getPhase()).Msg("GSA request failed")
+	}
+	return nil, lastErr
+}
+
+type gsaStep1ResponseError struct {
+	statusCode        int
+	contentType       string
+	bodyPreview       string
+	cause             error
+	actionUnavailable bool
+}
+
+func (e *gsaStep1ResponseError) Error() string {
+	return fmt.Sprintf("GSA Step 1 response is invalid (HTTP %d, content-type %q, body %q)",
+		e.statusCode, e.contentType, e.bodyPreview)
+}
+
+func (e *gsaStep1ResponseError) Unwrap() error {
+	return e.cause
+}
+
+func isGSAActionUnavailable(err error) bool {
+	var responseErr *gsaStep1ResponseError
+	return errors.As(err, &responseErr) && responseErr.actionUnavailable
+}
+
+func parseGSAStep1Response(statusCode int, contentType string, body []byte) (*GSAStep1Response, error) {
+	type Response struct {
+		Response *GSAStep1Response `plist:"Response"`
+	}
+
+	var response Response
+	if _, err := plist.Unmarshal(body, &response); err != nil {
+		return nil, newGSAStep1ResponseError(statusCode, contentType, body, err)
+	}
+	if response.Response == nil {
+		return nil, newGSAStep1ResponseError(statusCode, contentType, body, fmt.Errorf("plist does not contain a Response dictionary"))
+	}
+	return response.Response, nil
+}
+
+func newGSAStep1ResponseError(statusCode int, contentType string, body []byte, cause error) *gsaStep1ResponseError {
+	lowerBody := strings.ToLower(string(body))
+	preview := fmt.Sprintf("redacted; %d bytes", len(body))
+	actionUnavailable := false
+	for _, message := range []string{"this action cannot be completed at this time", "this action could not be completed"} {
+		if strings.Contains(lowerBody, message) {
+			preview = message
+			actionUnavailable = true
+			break
+		}
+	}
+	return &gsaStep1ResponseError{
+		statusCode:        statusCode,
+		contentType:       contentType,
+		bodyPreview:       preview,
+		cause:             cause,
+		actionUnavailable: actionUnavailable,
+	}
+}
 
 func shouldDumpGSAPlist() bool {
 	v := strings.TrimSpace(os.Getenv("IPAGET_DUMP_GSA_PLIST"))
@@ -47,6 +267,7 @@ type GSAValidateHeaders struct {
 	AcceptLanguage string // Accept-Language (default: en-us)
 	XAppleLocale   string // X-Apple-Locale (default: en_GB)
 	UserAgent      string // User-Agent (default: iCloud.exe ...)
+	ServiceURL     string
 }
 
 // GSAValidateBody is the XML plist body returned by /validate
@@ -95,7 +316,7 @@ func GetGSAValidate(hdr GSAValidateHeaders) (*GSAValidateResult, error) {
 	}
 
 	// HTTP client (match other GSA calls)
-	tr := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	tr := newGSATransport()
 	client := &http.Client{Timeout: 60 * time.Second, Transport: tr}
 
 	req, err := http.NewRequest("GET", validateURL, nil)
@@ -141,9 +362,11 @@ func GetGSAValidate(hdr GSAValidateHeaders) (*GSAValidateResult, error) {
 	if strings.TrimSpace(xLocale) != "" {
 		req.Header.Set("X-Apple-Locale", xLocale)
 	}
+	if strings.TrimSpace(hdr.UserAgent) != "" && hdr.UserAgent != "Xcode" {
+		setGSALoginHeaders(req, GSAHeaders{XMMEClientInfo: hdr.XMMEClientInfo, UserAgent: ua, AcceptLanguage: acceptLang})
+	}
 
 	logger.Debug().Str("url", validateURL).Str("user_agent", ua).Str("accept_language", acceptLang).Msg("GSA Validate Request")
-	logger.Debug().Interface("headers", req.Header).Msg("GSA Validate Request headers")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -151,7 +374,7 @@ func GetGSAValidate(hdr GSAValidateHeaders) (*GSAValidateResult, error) {
 	}
 	defer resp.Body.Close()
 
-	logger.Debug().Str("status", resp.Status).Interface("headers", resp.Header).Msg("GSA Validate Response headers")
+	logger.Debug().Str("status", resp.Status).Msg("GSA Validate Response")
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -217,6 +440,28 @@ type GSARequestCPD struct {
 	PRTN  string `plist:"prtn,omitempty"`
 }
 
+func (cpd GSARequestCPD) MarshalPlist() (interface{}, error) {
+	locale := strings.TrimSpace(cpd.Loc)
+	if locale == "" {
+		locale = "en_US"
+	}
+	service := strings.TrimSpace(cpd.SVCT)
+	if service == "" {
+		service = "iCloud"
+	}
+	return map[string]interface{}{
+		"bootstrap":       strconv.FormatBool(cpd.BootStrap),
+		"icscrec":         strconv.FormatBool(cpd.ICSCrec),
+		"pbe":             strconv.FormatBool(cpd.PBE),
+		"prkgen":          strconv.FormatBool(cpd.PRKGEN),
+		"loc":             locale,
+		"svct":            service,
+		"X-Apple-I-MD":    cpd.IMD,
+		"X-Apple-I-MD-M":  cpd.IMDM,
+		"X-Mme-Device-Id": cpd.UDID,
+	}, nil
+}
+
 // GSAStep1Request represents the first step request
 type GSAStep1Request struct {
 	A2K        []byte         `plist:"A2k"`
@@ -233,6 +478,7 @@ type GSAStatus struct {
 	ErrorCode        int    `plist:"ec"`
 	ErrorMessage     string `plist:"em"`
 	AuthType         string `plist:"au"`
+	Phase            string `plist:"-"`
 }
 
 // GSAStep1Response represents the first step response
@@ -280,6 +526,8 @@ type GSAApptokensRequest struct {
 // GSAHeaders optional headers influenced by Anisette data
 type GSAHeaders struct {
 	XMMEClientInfo string
+	UserAgent      string
+	ServiceURL     string
 	AcceptLanguage string
 	XAppleLocale   string
 	XAppleTimeZone string
@@ -317,30 +565,7 @@ func PostLoginStep1Request(req *GSAStep1Request, hdr GSAHeaders) (*GSAStep1Respo
 		logger.Debug().Str("url", gsaServiceURL).Str("operation", req.Operation).Str("username", req.UserName).Interface("proto_styles", req.ProtoStyle).Int("a2k_len", len(req.A2K)).Msg("GSA Step1 Request")
 	}
 
-	// Create client with TLS config to skip certificate verification
-	tr := &http.Transport{
-		Proxy:           http.ProxyFromEnvironment,
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{
-		Timeout:   60 * time.Second,
-		Transport: tr,
-	}
-
-	httpReq, err := http.NewRequest("POST", gsaServiceURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Match Sidestore's sendAuthenticationRequest headers exactly (only 4 headers!)
-	httpReq.Header.Set("Content-Type", "text/x-xml-plist")
-	if strings.TrimSpace(hdr.XMMEClientInfo) != "" {
-		httpReq.Header.Set("X-MMe-Client-Info", hdr.XMMEClientInfo)
-	}
-	httpReq.Header.Set("Accept", "*/*")
-	httpReq.Header.Set("User-Agent", "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0")
-
-	resp, err := client.Do(httpReq)
+	resp, err := postGSALoginRequest(body, hdr, "step1")
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -351,25 +576,20 @@ func PostLoginStep1Request(req *GSAStep1Request, hdr GSAHeaders) (*GSAStep1Respo
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	type Response struct {
-		Response *GSAStep1Response `plist:"Response"`
-	}
-
-	var response Response
-	_, err = plist.Unmarshal(respBody, &response)
+	step1Response, err := parseGSAStep1Response(resp.StatusCode, resp.Header.Get("Content-Type"), respBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	if response.Response != nil {
-		logEvent := logger.Debug().Int("status_code", response.Response.Status.StatusCode).Int("error_code", response.Response.Status.ErrorCode)
-		if response.Response.Status.ErrorMessage != "" {
-			logEvent = logEvent.Str("error_message", response.Response.Status.ErrorMessage)
+	if step1Response != nil {
+		logEvent := logger.Debug().Int("status_code", step1Response.Status.StatusCode).Int("error_code", step1Response.Status.ErrorCode)
+		if step1Response.Status.ErrorMessage != "" {
+			logEvent = logEvent.Str("error_message", step1Response.Status.ErrorMessage)
 		}
-		logEvent.Str("server_proto", response.Response.ServerProto).Int("iteration", response.Response.IterationCount).Int("salt_len", len(response.Response.Salt)).Int("server_b_len", len(response.Response.SRPB)).Str("session_ctx", response.Response.Complete).Msg("GSA Step1 Response")
+		logEvent.Str("server_proto", step1Response.ServerProto).Int("iteration", step1Response.IterationCount).Int("salt_len", len(step1Response.Salt)).Int("server_b_len", len(step1Response.SRPB)).Str("session_ctx", step1Response.Complete).Msg("GSA Step1 Response")
 	}
 
-	return response.Response, nil
+	return step1Response, nil
 }
 
 func PostGSAApptokensRequest(req *GSAApptokensRequest, hdr GSAValidateHeaders) (map[string]interface{}, error) {
@@ -387,28 +607,7 @@ func PostGSAApptokensRequest(req *GSAApptokensRequest, hdr GSAValidateHeaders) (
 		return nil, fmt.Errorf("failed to marshal plist: %w", err)
 	}
 
-	tr := &http.Transport{
-		Proxy:           http.ProxyFromEnvironment,
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{
-		Timeout:   60 * time.Second,
-		Transport: tr,
-	}
-
-	httpReq, err := http.NewRequest("POST", gsaServiceURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	httpReq.Header.Set("User-Agent", "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0")
-	httpReq.Header.Set("Content-Type", "text/x-xml-plist")
-	httpReq.Header.Set("Accept", "*/*")
-	if strings.TrimSpace(hdr.XMMEClientInfo) != "" {
-		httpReq.Header.Set("X-MMe-Client-Info", hdr.XMMEClientInfo)
-	}
-
-	resp, err := client.Do(httpReq)
+	resp, err := postGSALoginRequest(body, GSAHeaders{XMMEClientInfo: hdr.XMMEClientInfo, UserAgent: hdr.UserAgent, ServiceURL: hdr.ServiceURL}, "apptokens")
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -471,10 +670,7 @@ func PostGSARequest(params map[string]interface{}, hdr GSAValidateHeaders) (map[
 		Str("request_body_preview", bodyPreview).
 		Msg("Sending GSA request")
 
-	tr := &http.Transport{
-		Proxy:           http.ProxyFromEnvironment,
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
+	tr := newGSATransport()
 	client := &http.Client{
 		Timeout:   60 * time.Second,
 		Transport: tr,
@@ -550,32 +746,7 @@ func PostLoginStep2Request(req *GSAStep2Request, hdr GSAHeaders) (*GSAStep2Respo
 
 	logger.Debug().Str("url", gsaServiceURL).Str("operation", req.Operation).Str("username", req.UserName).Int("m1_len", len(req.M1)).Str("session_ctx", req.Complete).Msg("GSA Step2 Request")
 
-	// Create client with TLS config to skip certificate verification
-	tr := &http.Transport{
-		Proxy:           http.ProxyFromEnvironment,
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{
-		Timeout:   60 * time.Second,
-		Transport: tr,
-	}
-
-	httpReq, err := http.NewRequest("POST", gsaServiceURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Match Sidestore's sendAuthenticationRequest headers exactly (only 4 headers!)
-	httpReq.Header.Set("Content-Type", "text/x-xml-plist")
-	if strings.TrimSpace(hdr.XMMEClientInfo) != "" {
-		httpReq.Header.Set("X-MMe-Client-Info", hdr.XMMEClientInfo)
-	}
-	httpReq.Header.Set("Accept", "*/*")
-	httpReq.Header.Set("User-Agent", "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0")
-
-	logger.Debug().Interface("headers", httpReq.Header).Msg("GSA Step2 Request headers")
-
-	resp, err := client.Do(httpReq)
+	resp, err := postGSALoginRequest(body, hdr, "step2")
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

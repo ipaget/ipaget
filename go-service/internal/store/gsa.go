@@ -30,6 +30,8 @@ type AppleLoginContext struct {
 	SC       []byte
 	// Header/CPD overrides from Anisette
 	HeaderXMMEClientInfo string
+	HeaderUserAgent      string
+	HeaderServiceURL     string
 	HeaderAcceptLanguage string
 	HeaderAppleLocale    string
 	HeaderAppleTimeZone  string
@@ -48,7 +50,7 @@ func NewLoginSession(username, password string) *AppleLoginContext {
 	param := GetParams(2048)
 	param.NoUserNameInX = true
 	context.srp = NewSRPClient(param, nil)
-	context.UserName = []byte(username)
+	context.UserName = []byte(normalizeEmailKey(username))
 	context.Password = []byte(password)
 	context.Exchange = sha256.New()
 	return context
@@ -61,6 +63,8 @@ func (ctx *AppleLoginContext) SetAnisetteOverrides(a *AnisetteStored) {
 		return
 	}
 	ctx.HeaderXMMEClientInfo = a.DeviceDescription
+	ctx.HeaderUserAgent = a.UserAgent
+	ctx.HeaderServiceURL = a.GSAServiceURL
 	ctx.HeaderAcceptLanguage = toAcceptLanguage(a.Locale)
 	ctx.HeaderAppleLocale = a.Locale
 	ctx.HeaderAppleTimeZone = a.TimeZone
@@ -199,6 +203,8 @@ func (ctx *AppleLoginContext) LoginStep1(udid, imd, imdm, cid string) (*GSAStep1
 
 	headers := GSAHeaders{
 		XMMEClientInfo: ctx.HeaderXMMEClientInfo,
+		UserAgent:      ctx.HeaderUserAgent,
+		ServiceURL:     ctx.HeaderServiceURL,
 		AcceptLanguage: ctx.HeaderAcceptLanguage,
 		XAppleLocale:   ctx.HeaderAppleLocale,
 		XAppleTimeZone: ctx.HeaderAppleTimeZone,
@@ -224,6 +230,8 @@ func (ctx *AppleLoginContext) LoginStep2(m1 []byte, c string, sp string) (*GSASt
 
 	headers := GSAHeaders{
 		XMMEClientInfo: ctx.HeaderXMMEClientInfo,
+		UserAgent:      ctx.HeaderUserAgent,
+		ServiceURL:     ctx.HeaderServiceURL,
 		AcceptLanguage: ctx.HeaderAcceptLanguage,
 		XAppleLocale:   ctx.HeaderAppleLocale,
 		XAppleTimeZone: ctx.HeaderAppleTimeZone,
@@ -318,6 +326,7 @@ func GSALogin(username, password string, udid, imd, imdm, cid string) (*GSAStatu
 	if err != nil {
 		return nil, nil, fmt.Errorf("login step1 failed: %w", err)
 	}
+	resp.Status.Phase = "init"
 
 	if resp.Status.ErrorCode != 0 {
 		return &resp.Status, nil, nil
@@ -345,6 +354,7 @@ func GSALogin(username, password string, udid, imd, imdm, cid string) (*GSAStatu
 	if err != nil {
 		return nil, nil, fmt.Errorf("login step2 failed: %w", err)
 	}
+	resp2.Status.Phase = "complete"
 
 	if resp2.Status.ErrorCode != 0 {
 		return &resp2.Status, nil, nil
@@ -393,6 +403,7 @@ func GSALoginFull(username, password string, udid, imd, imdm, cid string, aniset
 	if err != nil {
 		return nil, nil, fmt.Errorf("login step1 failed: %w", err)
 	}
+	resp.Status.Phase = "init"
 
 	if resp.Status.ErrorCode != 0 {
 		return &resp.Status, nil, nil
@@ -420,6 +431,7 @@ func GSALoginFull(username, password string, udid, imd, imdm, cid string, aniset
 	if err != nil {
 		return nil, nil, fmt.Errorf("login step2 failed: %w", err)
 	}
+	resp2.Status.Phase = "complete"
 
 	if resp2.Status.ErrorCode != 0 {
 		return &resp2.Status, nil, nil

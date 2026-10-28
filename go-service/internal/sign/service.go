@@ -7,6 +7,9 @@ import (
 	"crypto/x509"
 	"encoding/binary"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -205,9 +208,47 @@ func SignIPA(options SignerOptions) error {
 	}
 
 	if options.NewBundleVersion != "" {
-		infoPlist["CFBundleVersion"] = options.NewBundleVersion
 		infoPlist["CFBundleShortVersionString"] = options.NewBundleVersion
+		if options.NewBuildVersion == "" {
+			infoPlist["CFBundleVersion"] = options.NewBundleVersion
+		}
 		needUpdateInfoPlist = true
+	}
+	if options.NewBuildVersion != "" {
+		infoPlist["CFBundleVersion"] = options.NewBuildVersion
+		needUpdateInfoPlist = true
+	}
+	if options.MinimumOSVersion != "" {
+		infoPlist["MinimumOSVersion"] = options.MinimumOSVersion
+		needUpdateInfoPlist = true
+	}
+	if options.Appearance == "Light" || options.Appearance == "Dark" {
+		infoPlist["UIUserInterfaceStyle"] = options.Appearance
+		needUpdateInfoPlist = true
+	} else if options.Appearance == "default" {
+		delete(infoPlist, "UIUserInterfaceStyle")
+		needUpdateInfoPlist = true
+	}
+
+	// Apply capability + advanced Info.plist overrides
+	if applyInfoPlistOverrides(infoPlist, options) {
+		needUpdateInfoPlist = true
+	}
+
+	// Bundle-level removals (Watch/, PlugIns/, launch images)
+	if options.RemoveWatchApp || options.RemovePlugIns || options.RemoveLaunchScreen {
+		if err := removeBundleExtras(appDir, options); err != nil {
+			logger.Warn().Err(err).Msg("bundle extra removal partially failed")
+		}
+	}
+
+	// App icon replacement
+	if options.IconFile != "" {
+		if changed, err := replaceAppIcon(appDir, infoPlist, options.IconFile); err != nil {
+			logger.Warn().Err(err).Msg("app icon replacement failed")
+		} else if changed {
+			needUpdateInfoPlist = true
+		}
 	}
 
 	if needUpdateInfoPlist {
@@ -630,4 +671,290 @@ func stringInSlice(str string, list []string) bool {
 		}
 	}
 	return false
+}
+
+// applyInfoPlistOverrides writes capability + advanced overrides into the Info.plist dict.
+// Returns true if any key was changed (caller should persist the dict).
+func applyInfoPlistOverrides(infoPlist map[string]interface{}, options SignerOptions) bool {
+	changed := false
+	set := func(key string, value interface{}) {
+		infoPlist[key] = value
+		changed = true
+	}
+	del := func(key string) {
+		if _, ok := infoPlist[key]; ok {
+			delete(infoPlist, key)
+			changed = true
+		}
+	}
+
+	// --- Common capabilities ---
+	if options.FileSharing {
+		set("UISupportsDocumentBrowser", true)
+	}
+	if options.ITunesFileSharing {
+		set("UIFileSharingEnabled", true)
+	}
+	if options.RemoveURLScheme {
+		del("CFBundleURLTypes")
+	}
+	if options.StatusBarHidden {
+		set("UIStatusBarHidden", true)
+	}
+	if options.ViewControllerBasedStatusBar {
+		set("UIViewControllerBasedStatusBarAppearance", true)
+	}
+	if options.PrerenderedIcon {
+		set("UIPrerenderedIcon", true)
+	}
+	if options.RequiresPersistentWiFi {
+		set("UIRequiresPersistentWiFi", true)
+	}
+	if options.ExitsOnSuspend {
+		set("UIApplicationExitsOnSuspend", true)
+	}
+	if options.NoEncryptionDecl {
+		set("ITSAppUsesNonExemptEncryption", false)
+	}
+	if options.AllowsArbitraryLoads {
+		ats, _ := infoPlist["NSAppTransportSecurity"].(map[string]interface{})
+		if ats == nil {
+			ats = map[string]interface{}{}
+		}
+		ats["NSAllowsArbitraryLoads"] = true
+		set("NSAppTransportSecurity", ats)
+	}
+
+	// --- Orientations ---
+	if options.OrientationPortrait || options.OrientationLandscapeLeft || options.OrientationLandscapeRight || options.OrientationPortraitUpsideDown {
+		var orients []string
+		if options.OrientationPortrait {
+			orients = append(orients, "UIInterfaceOrientationPortrait")
+		}
+		if options.OrientationLandscapeLeft {
+			orients = append(orients, "UIInterfaceOrientationLandscapeLeft")
+		}
+		if options.OrientationLandscapeRight {
+			orients = append(orients, "UIInterfaceOrientationLandscapeRight")
+		}
+		if options.OrientationPortraitUpsideDown {
+			orients = append(orients, "UIInterfaceOrientationPortraitUpsideDown")
+		}
+		set("UISupportedInterfaceOrientations", orients)
+		set("UISupportedInterfaceOrientations~ipad", orients)
+	}
+
+	// --- Background modes ---
+	if options.BgAudio || options.BgLocation || options.BgFetch || options.BgVoip {
+		var modes []string
+		if options.BgAudio {
+			modes = append(modes, "audio")
+		}
+		if options.BgLocation {
+			modes = append(modes, "location")
+		}
+		if options.BgFetch {
+			modes = append(modes, "fetch")
+		}
+		if options.BgVoip {
+			modes = append(modes, "voip")
+		}
+		set("UIBackgroundModes", modes)
+	}
+
+	// --- Advanced: device & scenes ---
+	if options.RemoveSupportedDevices {
+		del("UISupportedDevices")
+	}
+	if options.RequiredDeviceCapabilities != "" {
+		caps := strings.Split(options.RequiredDeviceCapabilities, ",")
+		for i := range caps {
+			caps[i] = strings.TrimSpace(caps[i])
+		}
+		set("UIRequiredDeviceCapabilities", caps)
+	}
+	if options.SupportsMultipleScenes != nil {
+		set("UIApplicationSupportsMultipleScenes", *options.SupportsMultipleScenes)
+	}
+
+	// --- Advanced: localization & category ---
+	if options.BundleLocalizations != "" {
+		langs := strings.Split(options.BundleLocalizations, ",")
+		for i := range langs {
+			langs[i] = strings.TrimSpace(langs[i])
+		}
+		set("CFBundleLocalizations", langs)
+	}
+	if options.DevelopmentRegion != "" {
+		set("CFBundleDevelopmentRegion", options.DevelopmentRegion)
+	}
+	if options.ApplicationCategoryType != "" {
+		set("LSApplicationCategoryType", options.ApplicationCategoryType)
+	}
+
+	// --- Advanced: URL scheme / document types ---
+	if options.CustomURLScheme != "" {
+		set("CFBundleURLTypes", []map[string]interface{}{
+			{"CFBundleURLName": options.CustomURLScheme, "CFBundleURLSchemes": []string{options.CustomURLScheme}},
+		})
+	}
+	if options.RemoveDocumentTypes {
+		del("CFBundleDocumentTypes")
+	}
+	if options.RemoveExportedTypeDeclarations {
+		del("UTExportedTypeDeclarations")
+	}
+	if options.RemoveApplicationQueriesSchemes {
+		del("LSApplicationQueriesSchemes")
+	}
+
+	// --- Advanced: privacy usage descriptions ---
+	for key, value := range options.PrivacyOverrides {
+		if value == "" {
+			del(key)
+		} else {
+			set(key, value)
+		}
+	}
+
+	// --- Advanced: launch screen ---
+	if options.RemoveLaunchScreen {
+		del("UILaunchStoryboardName")
+		del("UILaunchImages")
+	}
+
+	return changed
+}
+
+// removeBundleExtras deletes Watch/, PlugIns/, and launch image files from the app bundle.
+func removeBundleExtras(appDir string, options SignerOptions) error {
+	var errs []string
+
+	if options.RemoveWatchApp {
+		watchDir := filepath.Join(appDir, "Watch")
+		if _, err := os.Stat(watchDir); err == nil {
+			if err := os.RemoveAll(watchDir); err != nil {
+				errs = append(errs, fmt.Sprintf("Watch: %v", err))
+			}
+		}
+	}
+
+	if options.RemovePlugIns {
+		pluginsDir := filepath.Join(appDir, "PlugIns")
+		if _, err := os.Stat(pluginsDir); err == nil {
+			if err := os.RemoveAll(pluginsDir); err != nil {
+				errs = append(errs, fmt.Sprintf("PlugIns: %v", err))
+			}
+		}
+	}
+
+	if options.RemoveLaunchScreen {
+		// Remove LaunchImage assets directory if present
+		launchDir := filepath.Join(appDir, "LaunchImage.appiconset")
+		if _, err := os.Stat(launchDir); err == nil {
+			if err := os.RemoveAll(launchDir); err != nil {
+				errs = append(errs, fmt.Sprintf("LaunchImage: %v", err))
+			}
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("removal errors: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// replaceAppIcon decodes the provided image file, writes it as a PNG into the app bundle,
+// and rewrites Info.plist CFBundleIcons to reference the new icon. Returns true if the
+// Info.plist dict was modified (caller must persist).
+//
+// Strategy mirrors Feather: write a single high-res PNG and let iOS scale it down.
+// The icon name "FRIcon" is used so it won't collide with existing assets.
+func replaceAppIcon(appDir string, infoPlist map[string]interface{}, iconPath string) (bool, error) {
+	// Decode the source image (PNG or JPEG supported via std lib)
+	f, err := os.Open(iconPath)
+	if err != nil {
+		return false, fmt.Errorf("open icon file: %w", err)
+	}
+	defer f.Close()
+
+	img, format, err := image.Decode(f)
+	if err != nil {
+		return false, fmt.Errorf("decode icon (%s): %w", format, err)
+	}
+
+	// Re-encode as PNG (Apple requires PNG for app icons)
+	pngPath := filepath.Join(appDir, "FRIcon.png")
+	out, err := os.Create(pngPath)
+	if err != nil {
+		return false, fmt.Errorf("create icon output: %w", err)
+	}
+	if err := png.Encode(out, img); err != nil {
+		out.Close()
+		return false, fmt.Errorf("encode icon PNG: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		return false, fmt.Errorf("close icon output: %w", err)
+	}
+
+	// Remove existing icon files referenced by the old plist to avoid stale assets.
+	// We keep unknown files untouched; only remove ones we know the old plist pointed at.
+	removeOldIconFiles(appDir, infoPlist)
+
+	// Write the new CFBundleIcons entries — single high-res icon, iOS scales it.
+	primaryIcon := map[string]interface{}{
+		"CFBundleIconFiles": []string{"FRIcon"},
+		"CFBundleIconName":  "FRIcon",
+	}
+	infoPlist["CFBundleIcons"] = map[string]interface{}{
+		"CFBundlePrimaryIcon": primaryIcon,
+	}
+	infoPlist["CFBundleIcons~ipad"] = map[string]interface{}{
+		"CFBundlePrimaryIcon": primaryIcon,
+	}
+
+	logger.Info().Str("icon_path", iconPath).Str("output", pngPath).Msg("App icon replaced")
+	return true, nil
+}
+
+// removeOldIconFiles deletes the physical icon PNG files that the Info.plist
+// currently references (via CFBundleIconFiles / CFBundleIcons), so they don't
+// linger after replacement. Errors are logged, not fatal.
+func removeOldIconFiles(appDir string, infoPlist map[string]interface{}) {
+	collect := func(val interface{}) []string {
+		m, ok := val.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		primary, ok := m["CFBundlePrimaryIcon"].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		files, _ := primary["CFBundleIconFiles"].([]interface{})
+		var out []string
+		for _, f := range files {
+			if s, ok := f.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+
+	seen := map[string]bool{}
+	for _, key := range []string{"CFBundleIcons", "CFBundleIcons~ipad"} {
+		for _, base := range collect(infoPlist[key]) {
+			if seen[base] {
+				continue
+			}
+			seen[base] = true
+			for _, suffix := range []string{".png", "@2x.png", "-60.png", "@2x~ipad.png", "-76.png", "@2x~ipad.png"} {
+				p := filepath.Join(appDir, base+suffix)
+				if _, err := os.Stat(p); err == nil {
+					if err := os.Remove(p); err != nil {
+						logger.Debug().Err(err).Str("file", p).Msg("could not remove old icon file")
+					}
+				}
+			}
+		}
+	}
 }

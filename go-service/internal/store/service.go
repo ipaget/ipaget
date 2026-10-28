@@ -1,12 +1,12 @@
 package store
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ipaget-service/internal/logger"
@@ -30,7 +31,6 @@ import (
 	"github.com/99designs/keyring"
 	cookiejar "github.com/juju/persistent-cookiejar"
 	"github.com/majd/ipatool/v2/pkg/appstore"
-	ipatoolhttp "github.com/majd/ipatool/v2/pkg/http"
 	ipatoolKeychain "github.com/majd/ipatool/v2/pkg/keychain"
 	"github.com/majd/ipatool/v2/pkg/util/machine"
 	"github.com/majd/ipatool/v2/pkg/util/operatingsystem"
@@ -53,15 +53,21 @@ type Service struct {
 		http.CookieJar
 		Save() error
 	}
-	configDir          string
-	machine            machine.Machine
-	anisetteURL        string
-	appStoreHeadersMu  sync.Mutex
-	appStoreDeviceIDMu sync.RWMutex
-	appStoreDeviceID   string
-	appSubtitleCacheMu sync.RWMutex
-	appSubtitleCache   map[string]string
-	onGSAAuthenticated func(email, password, dsid, authToken, anisetteURL string, anisetteData *AnisetteData)
+	configDir           string
+	machine             machine.Machine
+	anisetteURL         string
+	appStoreDeviceIDMu  sync.RWMutex
+	appStoreDeviceID    string
+	appSubtitleCacheMu  sync.RWMutex
+	appSubtitleCache    map[string]string
+	appStoreReloginMu   sync.Mutex
+	appStoreReloginFail map[string]time.Time
+	onGSAAuthenticated  func(email, password, dsid, authToken, anisetteURL string, anisetteData *AnisetteData)
+	gsaLogin            func(username, password, udid, imd, imdm, cid string, anisette *AnisetteStored) (*GSAStatus, []byte, error)
+	gsaAppToken         func(*SPDData, *AnisetteData) (string, error)
+	anisetteFetch       func(string) (*AnisetteData, error)
+	anisetteCacheMu     sync.Mutex
+	anisetteCache       map[string]anisetteV3CacheEntry
 }
 
 type anisetteAwareMachine struct {
@@ -109,6 +115,7 @@ type versionHistoryProgressReporter struct {
 type GSAError struct {
 	Code    int
 	Message string
+	Phase   string
 }
 
 type TwoFactorError struct {
@@ -120,10 +127,14 @@ func (e *GSAError) Error() string {
 	if e == nil {
 		return ""
 	}
-	if e.Message == "" {
-		return fmt.Sprintf("GSA error (%d)", e.Code)
+	prefix := "GSA"
+	if e.Phase != "" {
+		prefix += " " + e.Phase
 	}
-	return fmt.Sprintf("GSA error (code %d): %s", e.Code, e.Message)
+	if e.Message == "" {
+		return fmt.Sprintf("%s error (%d)", prefix, e.Code)
+	}
+	return fmt.Sprintf("%s error (code %d): %s", prefix, e.Code, e.Message)
 }
 
 func (e *TwoFactorError) Error() string {
@@ -206,10 +217,17 @@ func (s *Service) acquireLicenseForVersionHistory(account **appstore.Account, em
 func (s *Service) fetchVersionHistory(account **appstore.Account, email, bundleID string, app appstore.App, progress *versionHistoryProgressReporter) (appstore.ListVersionsOutput, error) {
 	log := logger.Logger
 
-	progress.send(30, "Fetching version list...")
-	log.Info().Str("bundle_id", bundleID).Str("app_name", app.Name).Bool("is_paid", app.Price > 0).Msg("Listing app versions")
+	progress.send(30, "Preparing Apple download authorization...")
+	log.Info().Str("bundle_id", bundleID).Str("app_name", app.Name).Int64("app_id", app.ID).Bool("is_paid", app.Price > 0).Msg("Version list phase started")
 
+	requestStartedAt := time.Now()
+	log.Info().Str("bundle_id", bundleID).Int64("app_id", app.ID).Msg("Requesting Apple version list")
 	versionsOutput, err := s.appStore.ListVersions(appstore.ListVersionsInput{Account: **account, App: app})
+	if err != nil {
+		log.Warn().Err(err).Str("bundle_id", bundleID).Int64("app_id", app.ID).Dur("elapsed", time.Since(requestStartedAt)).Msg("Apple version list request failed")
+	} else {
+		log.Info().Str("bundle_id", bundleID).Int64("app_id", app.ID).Int("version_count", len(versionsOutput.ExternalVersionIdentifiers)).Dur("elapsed", time.Since(requestStartedAt)).Msg("Apple version list request completed")
+	}
 	if err != nil && errors.Is(err, appstore.ErrPasswordTokenExpired) {
 		log.Warn().Err(err).Str("bundle_id", bundleID).Msg("Password token expired during list versions - attempting refresh and retry")
 		if newAccount, refreshErr := s.refreshAccountToken(email, *account); refreshErr == nil {
@@ -219,6 +237,7 @@ func (s *Service) fetchVersionHistory(account **appstore.Account, email, bundleI
 	}
 
 	if err == nil {
+		progress.send(55, "Version list received from Apple...")
 		return versionsOutput, nil
 	}
 
@@ -226,11 +245,13 @@ func (s *Service) fetchVersionHistory(account **appstore.Account, email, bundleI
 		progress.send(50, "Acquiring app license, please wait...")
 		log.Info().Str("bundle_id", bundleID).Str("app_name", app.Name).Bool("is_paid", app.Price > 0).Msg("Version listing requires a license; attempting to acquire one")
 
+		licenseStartedAt := time.Now()
 		purchaseErr := s.acquireLicenseForVersionHistory(account, email, bundleID, app)
 		if purchaseErr != nil {
-			log.Warn().Err(purchaseErr).Str("bundle_id", bundleID).Msg("License acquisition failed before retrying version listing")
+			log.Warn().Err(purchaseErr).Str("bundle_id", bundleID).Dur("elapsed", time.Since(licenseStartedAt)).Msg("License acquisition failed before retrying version listing")
 			return appstore.ListVersionsOutput{}, purchaseErr
 		}
+		log.Info().Str("bundle_id", bundleID).Dur("elapsed", time.Since(licenseStartedAt)).Msg("License acquisition completed; retrying version list")
 
 		versionsOutput, err = s.appStore.ListVersions(appstore.ListVersionsInput{Account: **account, App: app})
 		if err != nil && errors.Is(err, appstore.ErrPasswordTokenExpired) {
@@ -246,6 +267,7 @@ func (s *Service) fetchVersionHistory(account **appstore.Account, email, bundleI
 			return appstore.ListVersionsOutput{}, fmt.Errorf("failed to list versions: %w", err)
 		}
 
+		progress.send(55, "Version list received from Apple...")
 		return versionsOutput, nil
 	}
 
@@ -257,6 +279,7 @@ func (s *Service) fetchVersionHistory(account **appstore.Account, email, bundleI
 		versionsOutput, err = s.appStore.ListVersions(appstore.ListVersionsInput{Account: **account, App: app})
 		if err == nil {
 			log.Info().Str("bundle_id", bundleID).Int("attempt", attempt).Msg("Successfully listed versions after retry")
+			progress.send(55, "Version list received from Apple...")
 			return versionsOutput, nil
 		}
 
@@ -267,6 +290,7 @@ func (s *Service) fetchVersionHistory(account **appstore.Account, email, bundleI
 				versionsOutput, err = s.appStore.ListVersions(appstore.ListVersionsInput{Account: **account, App: app})
 				if err == nil {
 					log.Info().Str("bundle_id", bundleID).Int("attempt", attempt).Msg("Successfully listed versions after token refresh")
+					progress.send(55, "Version list received from Apple...")
 					return versionsOutput, nil
 				}
 			}
@@ -364,6 +388,8 @@ type AnisetteStored struct {
 	DeviceUniqueID     string `json:"deviceUniqueIdentifier"`
 	DeviceSerialNumber string `json:"deviceSerialNumber"`
 	DeviceDescription  string `json:"deviceDescription"`
+	UserAgent          string `json:"userAgent,omitempty"`
+	GSAServiceURL      string `json:"gsaServiceURL,omitempty"`
 	ClientTime         string `json:"date"`
 	Locale             string `json:"locale"`
 	TimeZone           string `json:"timeZone"`
@@ -384,6 +410,7 @@ type GSAPending2FA struct {
 	AnisetteURL  string        `json:"anisette_url"`
 	AnisetteData *AnisetteData `json:"anisette_data"`
 	CreatedAt    time.Time     `json:"created_at"`
+	ForSigning   bool          `json:"for_signing,omitempty"`
 }
 
 func normalizeEmailKey(email string) string {
@@ -470,6 +497,9 @@ func (s *Service) SaveGSACredentials(email string, creds *GSACredentials) error 
 	if creds == nil {
 		return fmt.Errorf("credentials payload is nil")
 	}
+	if err := creds.validate(); err != nil {
+		return err
+	}
 
 	payload, err := json.Marshal(creds)
 	if err != nil {
@@ -492,7 +522,23 @@ func (s *Service) GetGSACredentials(email string) (*GSACredentials, error) {
 	if err := json.Unmarshal(b, &creds); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal GSA credentials: %w", err)
 	}
+	if err := creds.validate(); err != nil {
+		return nil, err
+	}
 	return &creds, nil
+}
+
+func (creds *GSACredentials) validate() error {
+	if strings.TrimSpace(creds.DSID) == "" {
+		return fmt.Errorf("developer credentials are missing DSID")
+	}
+	if strings.TrimSpace(creds.AuthToken) == "" {
+		return fmt.Errorf("developer credentials are missing the Xcode authentication token")
+	}
+	if creds.AnisetteData == nil {
+		return fmt.Errorf("developer credentials are missing Anisette data")
+	}
+	return nil
 }
 
 func toAcceptLanguage(locale string) string {
@@ -555,7 +601,7 @@ func NewService(configDir string, onGSAAuthenticated func(email, password, dsid,
 	}
 	log.Info().Msg("Keyring opened successfully")
 
-	kc := ipatoolKeychain.New(ipatoolKeychain.Args{Keyring: kr})
+	kc := ipatoolKeychain.New(ipatoolKeychain.Args{Keyring: &ipatoolKeyringAdapter{keyring: kr}})
 	if kc == nil {
 		log.Fatal().Msg("Failed to create keychain - returned nil")
 		panic(fmt.Errorf("failed to create keychain: returned nil"))
@@ -576,11 +622,12 @@ func NewService(configDir string, onGSAAuthenticated func(email, password, dsid,
 	log.Info().Msg("Machine and OS instances created successfully")
 
 	service := &Service{
-		keychain:           kc,
-		configDir:          configDir,
-		anisetteURL:        getAnisetteURL(configDir),
-		appSubtitleCache:   make(map[string]string),
-		onGSAAuthenticated: onGSAAuthenticated,
+		keychain:            kc,
+		configDir:           configDir,
+		anisetteURL:         getAnisetteURL(configDir),
+		appSubtitleCache:    make(map[string]string),
+		appStoreReloginFail: make(map[string]time.Time),
+		onGSAAuthenticated:  onGSAAuthenticated,
 	}
 
 	wrappedMachine := &anisetteAwareMachine{
@@ -603,7 +650,7 @@ func NewService(configDir string, onGSAAuthenticated func(email, password, dsid,
 		Keychain:        kc,
 		CookieJar:       cjWrapper,
 		OperatingSystem: osInstance,
-		Machine:         wrappedMachine,
+		Machine:         machineInstance,
 	})
 	if as == nil {
 		log.Fatal().Msg("Failed to create AppStore client - returned nil")
@@ -661,47 +708,6 @@ func (s *Service) getAppStoreDeviceIDOverride() string {
 	s.appStoreDeviceIDMu.RLock()
 	defer s.appStoreDeviceIDMu.RUnlock()
 	return s.appStoreDeviceID
-}
-
-func (s *Service) withTemporaryAppStoreHeaders(anisetteData *AnisetteData, fn func() (appstore.LoginOutput, error)) (appstore.LoginOutput, error) {
-	if anisetteData == nil {
-		return fn()
-	}
-
-	deviceID := normalizeDeviceID(anisetteData.DeviceID)
-	if deviceID == "" {
-		deviceID = s.getAppStoreDeviceIDOverride()
-	}
-	if deviceID != "" {
-		s.setAppStoreDeviceIDOverride(anisetteData.DeviceID)
-	}
-
-	headers := map[string]string{
-		"X-Apple-I-Client-Time": anisetteData.ClientTime,
-		"X-Apple-I-MD":          anisetteData.MD,
-		"X-Apple-I-MD-M":        anisetteData.MDM,
-		"X-Apple-I-MD-RINFO":    anisetteData.MDRINFO,
-		"X-Apple-I-MD-LU":       anisetteData.MDLU,
-		"X-Apple-I-SRL-NO":      anisetteData.SRLNO,
-		"X-MMe-Client-Info":     anisetteData.ClientInfo,
-		"X-Apple-I-TimeZone":    anisetteData.TimeZone,
-		"X-Apple-Locale":        anisetteData.Locale,
-		"X-Apple-I-Locale":      anisetteData.Locale,
-		"X-Mme-Device-Id":       canonicalDeviceID(anisetteData.DeviceID),
-		"Accept-Language":       toAcceptLanguage(anisetteData.Locale),
-	}
-
-	s.appStoreHeadersMu.Lock()
-	previousProvider := ipatoolhttp.ExtraHeadersProvider
-	ipatoolhttp.ExtraHeadersProvider = func() map[string]string {
-		return headers
-	}
-	defer func() {
-		ipatoolhttp.ExtraHeadersProvider = previousProvider
-		s.appStoreHeadersMu.Unlock()
-	}()
-
-	return fn()
 }
 
 func (s *Service) loadAppStoreAnisetteData(email string) *AnisetteData {
@@ -784,15 +790,23 @@ func (s *Service) loadOrCreatePersistentAppStoreDeviceID() string {
 }
 
 func (s *Service) Login(email, password string) (*models.AuthResponse, error) {
-	return s.loginWithIpatool(email, password, "", nil)
+	return s.loginWithIpatool(email, password, "")
 }
 
 func (s *Service) LoginWithGSA(email, password, anisetteURL string) (*models.AuthResponse, error) {
-	return s.loginWithGSAAndAppStoreCode(email, password, anisetteURL, "")
+	return s.loginWithGSAAndAppStoreCode(email, password, anisetteURL, "", false)
 }
 
-func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appStoreAuthCode string) (*models.AuthResponse, error) {
+func (s *Service) LoginForSigning(email, password, anisetteURL string) (*models.AuthResponse, error) {
+	if strings.TrimSpace(anisetteURL) == "" {
+		anisetteURL = defaultSigningAnisetteURL
+	}
+	return s.loginWithGSAAndAppStoreCode(email, password, anisetteURL, "", true)
+}
+
+func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appStoreAuthCode string, requireGSA bool) (*models.AuthResponse, error) {
 	log := logger.Logger
+	email = normalizeEmailKey(email)
 
 	macAddr, err := s.machine.MacAddress()
 	if err != nil {
@@ -819,9 +833,16 @@ func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appS
 	// 2. App token request
 	// 3. Stored with GSA credentials for later Developer Portal API calls
 	var sessionAnisetteData *AnisetteData
+	fetchAnisette := s.fetchSessionAnisette
+	if s.anisetteFetch != nil {
+		fetchAnisette = s.anisetteFetch
+	}
 	if anisetteURL != "" {
-		data, err := FetchAnisetteData(anisetteURL)
+		data, err := fetchAnisette(anisetteURL)
 		if err != nil {
+			if requireGSA {
+				return nil, fmt.Errorf("selected developer Anisette source failed: %w", err)
+			}
 			log.Warn().Err(err).Str("email", email).Str("anisette_server", anisetteURL).Msg("Failed to fetch anisette data from configured server - trying default servers")
 		} else {
 			sessionAnisetteData = data
@@ -834,7 +855,7 @@ func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appS
 			if strings.TrimSpace(server) == "" {
 				continue
 			}
-			data, err := FetchAnisetteData(server)
+			data, err := fetchAnisette(server)
 			if err != nil {
 				log.Warn().Err(err).Str("email", email).Str("anisette_server", server).Msg("Failed to fetch anisette data from default server")
 				continue
@@ -882,6 +903,8 @@ func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appS
 			DeviceUniqueID:     canonicalDeviceID(sessionAnisetteData.DeviceID),
 			DeviceSerialNumber: sessionAnisetteData.SRLNO,
 			DeviceDescription:  sessionAnisetteData.ClientInfo,
+			UserAgent:          sessionAnisetteData.UserAgent,
+			GSAServiceURL:      sessionAnisetteData.GSAServiceURL,
 			ClientTime:         sessionAnisetteData.ClientTime,
 			Locale:             sessionAnisetteData.Locale,
 			TimeZone:           sessionAnisetteData.TimeZone,
@@ -939,15 +962,30 @@ func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appS
 		log.Debug().Str("email", email).Msg("Using device metadata MD/MDM for GSA CPD (fallback)")
 	}
 
-	status, token, err := GSALoginFull(email, password, udid, imd, imdm, deviceMeta.CID, anisettePersist)
+	login := s.gsaLogin
+	if login == nil {
+		login = GSALoginFull
+	}
+	status, token, err := login(email, password, udid, imd, imdm, deviceMeta.CID, anisettePersist)
 	if err != nil {
+		if !requireGSA && isGSAActionUnavailable(err) {
+			log.Info().Str("email", email).Msg("GSA rejected this login action; falling back to ipatool")
+			return s.loginWithIpatool(email, password, appStoreAuthCode)
+		}
 		return nil, fmt.Errorf("GSA login failed: %w", err)
+	}
+	if status == nil {
+		return nil, fmt.Errorf("GSA authentication returned no status")
+	}
+	if status.StatusCode == 409 && status.AuthType == "" {
+		status.AuthType = "pushedCode"
 	}
 
 	// Apple may return hsc=409 with SPD when additional verification is required.
 	// In this case the auth type is decisive and we must stop before requesting app tokens.
-	if status.StatusCode == 409 && (status.AuthType == "trustedDeviceSecondaryAuth" || status.AuthType == "secondaryAuth") {
-		if sessionAnisetteData != nil && token != nil {
+	if status.StatusCode == 409 && (status.AuthType == "trustedDeviceSecondaryAuth" || status.AuthType == "secondaryAuth" || status.AuthType == "pushedCode") {
+		pendingSaved := false
+		if status.AuthType != "pushedCode" && sessionAnisetteData != nil && token != nil {
 			if spdData, parseErr := ParseSPDToken(token); parseErr == nil {
 				if strings.TrimSpace(spdData.ADSID) != "" && strings.TrimSpace(spdData.GsIdmsToken) != "" {
 					if err := requestTrustedDeviceCode(&GSAPending2FA{
@@ -957,6 +995,7 @@ func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appS
 						AnisetteURL:  anisetteURL,
 						AnisetteData: sessionAnisetteData,
 						CreatedAt:    time.Now(),
+						ForSigning:   requireGSA,
 					}); err != nil {
 						log.Warn().Err(err).Str("email", email).Msg("Failed to proactively request trusted device code")
 					} else {
@@ -976,15 +1015,20 @@ func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appS
 						AnisetteURL:  anisetteURL,
 						AnisetteData: sessionAnisetteData,
 						CreatedAt:    time.Now(),
+						ForSigning:   requireGSA,
 					}); err != nil {
-						log.Warn().Err(err).Str("email", email).Msg("Failed to store pending GSA 2FA context")
+						return nil, fmt.Errorf("failed to save developer verification context: %w", err)
 					}
+					pendingSaved = true
 				}
 			} else {
 				log.Warn().Err(parseErr).Str("email", email).Msg("Failed to parse SPD while storing pending 2FA context")
 			}
 		}
 
+		if !pendingSaved {
+			return nil, fmt.Errorf("Apple requested developer verification without a usable GSA session. Please try signing in again")
+		}
 		// 2FA required
 		log.Info().Str("email", email).Str("auth_type", status.AuthType).Msg("GSA authentication requires 2FA")
 		return &models.AuthResponse{
@@ -995,21 +1039,22 @@ func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appS
 	}
 
 	if status.ErrorCode != 0 {
+		if requireGSA {
+			return nil, &GSAError{Code: status.ErrorCode, Message: status.ErrorMessage, Phase: status.Phase}
+		}
 		// Check for environment mismatch error
 		if status.ErrorCode == -22421 ||
 			(status.ErrorMessage != "" &&
 				(containsSubstring(status.ErrorMessage, "environment mismatch") ||
-					containsSubstring(status.ErrorMessage, "This action could not be completed"))) {
-			// Environment mismatch - clear existing device metadata and GSA credentials
-			log.Info().Str("email", email).Msg("GSA authentication failed with environment mismatch, clearing device metadata and credentials")
-			s.clearDeviceMetadata(email)
-			s.clearGSACredentials(email)
+					containsSubstring(status.ErrorMessage, "This action could not be completed") ||
+					containsSubstring(status.ErrorMessage, "This action cannot be completed at this time"))) {
+			log.Info().Str("email", email).Msg("Developer authentication unavailable; preserving existing credentials during App Store fallback")
 
 			// Automatically fallback to ipatool
 			log.Info().Str("email", email).Msg("Automatically switching to ipatool")
 
 			// Try ipatool authentication directly
-			return s.loginWithIpatool(email, password, "", sessionAnisetteData)
+			return s.loginWithIpatool(email, password, appStoreAuthCode)
 		}
 		return nil, fmt.Errorf("%s", status.ErrorMessage)
 	}
@@ -1018,84 +1063,36 @@ func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appS
 		return nil, fmt.Errorf("GSA authentication failed: no token received")
 	}
 
-	log.Info().Str("email", email).Msg("GSA authentication successful")
-
-	// Parse SPD token to extract DSID for developer portal
-	// The token is already decrypted plist data from GSALoginFull
-	spdData, err := ParseSPDToken(token)
-	if err != nil {
-		previewLen := len(token)
-		if previewLen > 100 {
-			previewLen = 100
+	spdData, developerErr := s.saveDeveloperSession(email, token, anisetteURL, sessionAnisetteData)
+	if developerErr != nil {
+		if requireGSA {
+			return nil, fmt.Errorf("developer authentication failed: %w", developerErr)
 		}
-		log.Error().Err(err).Int("token_len", len(token)).Str("token_preview", string(token[:previewLen])).Msg("Failed to parse SPD token - GSA credentials will not be saved!")
-		// This is critical - without parsed SPD data, we cannot save GSA credentials for later use
-		// User will need to re-login for certificate generation
-	} else {
-		log.Info().Str("email", email).
-			Str("adsid", spdData.ADSID).
-			Bool("has_gs_idms_token", spdData.GsIdmsToken != "").
-			Bool("has_delegate_token", spdData.DelegateToken != "").
-			Bool("has_session_key", len(spdData.SessionKey) > 0).
-			Bool("has_c", len(spdData.C) > 0).
-			Int("session_key_len", len(spdData.SessionKey)).
-			Int("c_len", len(spdData.C)).
-			Msg("SPD token parsed successfully - checking available tokens")
-
-		// CRITICAL: Always save GSA credentials synchronously FIRST
-		// This ensures credentials are available immediately after LoginWithGSA returns
-		// The async callback is only for certificate generation, not credential saving
-		authTokenToSave := spdData.GsIdmsToken
-
-		// Try to get app-specific token if possible
-		if len(spdData.SessionKey) > 0 && len(spdData.C) > 0 {
-			log.Info().Str("email", email).Msg("Attempting to fetch app-specific auth token for Developer Portal")
-			appToken, err := s.fetchAppAuthToken(spdData, sessionAnisetteData)
-			if err != nil {
-				log.Error().Err(err).Str("email", email).Msg("Failed to fetch app-specific auth token, using GsIdmsToken")
-			} else {
-				log.Info().Str("email", email).Msg("Successfully fetched app-specific auth token")
-				authTokenToSave = appToken
-			}
-		} else {
-			log.Warn().
-				Str("email", email).
-				Bool("has_sk", len(spdData.SessionKey) > 0).
-				Bool("has_c", len(spdData.C) > 0).
-				Msg("SPD data missing required fields for app token generation, using GsIdmsToken")
+		log.Warn().Err(developerErr).Msg("Developer authentication unavailable; continuing with App Store login")
+	} else if !requireGSA && s.onGSAAuthenticated != nil {
+		creds, err := s.GetGSACredentials(email)
+		if err != nil {
+			return nil, err
 		}
-
-		// SYNCHRONOUSLY save GSA credentials - this is critical for handleImportFreeCert
-		if authTokenToSave != "" {
-			creds := &GSACredentials{
-				DSID:         spdData.ADSID,
-				AuthToken:    authTokenToSave,
-				AnisetteURL:  anisetteURL,
-				AnisetteData: sessionAnisetteData,
-			}
-			if err := s.SaveGSACredentials(email, creds); err != nil {
-				log.Error().Err(err).Str("email", email).Msg("Failed to save GSA credentials")
-			} else {
-				log.Info().
-					Str("email", email).
-					Bool("has_anisette_data", sessionAnisetteData != nil).
-					Str("client_time", func() string {
-						if sessionAnisetteData != nil {
-							return sessionAnisetteData.ClientTime
-						}
-						return "nil"
-					}()).
-					Msg("GSA credentials saved synchronously")
-			}
+		go func() {
+			defer func() { recover() }()
+			s.onGSAAuthenticated(email, password, creds.DSID, creds.AuthToken, anisetteURL, sessionAnisetteData)
+		}()
+	}
+	if requireGSA {
+		account, err := s.loadStoredAccount(email)
+		if err != nil {
+			account = &appstore.Account{Email: email}
 		}
-
-		// Trigger async certificate generation if callback is set
-		if s.onGSAAuthenticated != nil && authTokenToSave != "" {
-			go func(e, p, dsid, authToken, aniURL string, aniData *AnisetteData) {
-				defer func() { recover() }()
-				s.onGSAAuthenticated(e, p, dsid, authToken, aniURL, aniData)
-			}(email, password, spdData.ADSID, authTokenToSave, anisetteURL, sessionAnisetteData)
+		account.Password = password
+		data, err := json.Marshal(account)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode signing account: %w", err)
 		}
+		if err := s.keychain.Set(s.getAccountKey(email), data); err != nil {
+			return nil, fmt.Errorf("failed to save signing account: %w", err)
+		}
+		return &models.AuthResponse{Success: true, Email: email, Message: "Developer authentication successful"}, nil
 	}
 
 	// Save device metadata for future logins
@@ -1106,9 +1103,26 @@ func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appS
 	// Prefer App Store login when available, but do not fail the whole sign-in flow if
 	// GSA already succeeded. Free-sign certificate generation only requires the GSA session.
 	log.Info().Str("email", email).Msg("GSA successful - proceeding with ipatool App Store login")
-	appStoreResp, appStoreErr := s.loginWithIpatool(email, password, appStoreAuthCode, sessionAnisetteData)
+	appStoreResp, appStoreErr := s.loginWithIpatool(email, password, appStoreAuthCode)
 	if appStoreErr == nil {
+		if appStoreResp != nil && appStoreResp.Requires2FA {
+			// GSA succeeded but the App Store login still needs a code.
+			// Store pending context so Verify2FA can retry with the code
+			// instead of failing with "no pending 2FA session".
+			if err := s.SavePending2FA(email, &GSAPending2FA{
+				AuthType:     "appstore",
+				AnisetteURL:  anisetteURL,
+				AnisetteData: sessionAnisetteData,
+				CreatedAt:    time.Now(),
+			}); err != nil {
+				log.Warn().Err(err).Str("email", email).Msg("Failed to store pending App Store 2FA context")
+			}
+			log.Info().Str("email", email).Msg("App Store login requires 2FA after successful GSA auth")
+		}
 		return appStoreResp, nil
+	}
+	if developerErr != nil {
+		return nil, fmt.Errorf("App Store login failed: %w; developer authentication also failed: %v", appStoreErr, developerErr)
 	}
 
 	log.Warn().
@@ -1146,9 +1160,10 @@ func (s *Service) loginWithGSAAndAppStoreCode(email, password, anisetteURL, appS
 	}
 
 	return &models.AuthResponse{
-		Success: true,
-		Email:   email,
-		Message: "Login successful",
+		Success:              true,
+		Email:                email,
+		Message:              "Login successful",
+		AppStoreSessionError: appStoreErr.Error(),
 	}, nil
 }
 
@@ -1162,6 +1177,33 @@ func containsSubstring(s, substr string) bool {
 	return false
 }
 
+func (s *Service) saveDeveloperSession(email string, token []byte, anisetteURL string, anisette *AnisetteData) (*SPDData, error) {
+	spd, err := ParseSPDToken(token)
+	if err != nil {
+		return nil, err
+	}
+	if anisette == nil {
+		return nil, fmt.Errorf("fresh Anisette data is required for developer authentication")
+	}
+	fetchToken := s.gsaAppToken
+	if fetchToken == nil {
+		fetchToken = s.fetchAppAuthToken
+	}
+	appToken, err := fetchToken(spd, anisette)
+	if err != nil {
+		return nil, fmt.Errorf("failed to obtain com.apple.gs.xcode.auth token: %w", err)
+	}
+	if strings.TrimSpace(appToken) == "" {
+		return nil, fmt.Errorf("Apple returned an empty com.apple.gs.xcode.auth token")
+	}
+	if err := s.SaveGSACredentials(email, &GSACredentials{
+		DSID: spd.ADSID, AuthToken: appToken, AnisetteURL: anisetteURL, AnisetteData: anisette,
+	}); err != nil {
+		return nil, err
+	}
+	return spd, nil
+}
+
 // Helper function to safely get string from map
 func getStringOrEmpty(m map[string]interface{}, key string) string {
 	if v, ok := m[key]; ok {
@@ -1172,7 +1214,7 @@ func getStringOrEmpty(m map[string]interface{}, key string) string {
 	return ""
 }
 
-func (s *Service) loginWithIpatool(email, password, authCode string, anisetteData *AnisetteData) (*models.AuthResponse, error) {
+func (s *Service) loginWithIpatool(email, password, authCode string) (*models.AuthResponse, error) {
 	log := logger.Logger
 
 	log.Debug().Str("email", email).Bool("has_password", password != "").Bool("has_authcode", authCode != "").Msg("Calling appStore.Login (ipatool)")
@@ -1188,44 +1230,13 @@ func (s *Service) loginWithIpatool(email, password, authCode string, anisetteDat
 		return nil, fmt.Errorf("service not properly initialized: appStore is nil")
 	}
 
-	if anisetteData == nil {
-		anisetteData = s.loadAppStoreAnisetteData(email)
-	}
-	if anisetteData != nil {
-		s.setAppStoreDeviceIDOverride(anisetteData.DeviceID)
-		log.Info().
-			Str("email", email).
-			Str("device_id", normalizeDeviceID(anisetteData.DeviceID)).
-			Str("client_time", anisetteData.ClientTime).
-			Msg("Injecting anisette headers into App Store login request")
-	} else {
-		log.Warn().Str("email", email).Msg("Proceeding with App Store login without anisette headers")
-	}
-
-	if strings.TrimSpace(authCode) != "" {
-		_, preflightErr := s.withTemporaryAppStoreHeaders(anisetteData, func() (appstore.LoginOutput, error) {
-			return s.appStore.Login(appstore.LoginInput{
-				Email:    email,
-				Password: password,
-			})
-		})
-
-		switch {
-		case preflightErr == nil:
-			log.Info().Str("email", email).Msg("App Store login preflight completed without requiring an auth code")
-		case errors.Is(preflightErr, appstore.ErrAuthCodeRequired):
-			log.Info().Str("email", email).Msg("App Store login preflight requested an auth code; retrying with provided code")
-		default:
-			log.Warn().Err(preflightErr).Str("email", email).Msg("App Store login preflight failed; retrying with provided code anyway")
-		}
-	}
-
-	output, err := s.withTemporaryAppStoreHeaders(anisetteData, func() (appstore.LoginOutput, error) {
-		return s.appStore.Login(appstore.LoginInput{
-			Email:    email,
-			Password: password,
-			AuthCode: authCode,
-		})
+	// The code is only supplied after the store has asked for one, so go straight to
+	// that single authenticated request. Probing without the code first spends an
+	// extra Apple sign-in on the user's account for every login.
+	output, err := s.appStore.Login(appstore.LoginInput{
+		Email:    email,
+		Password: password,
+		AuthCode: authCode,
 	})
 
 	log.Debug().Str("email", email).Bool("has_error", err != nil).Msg("appStore.Login returned")
@@ -1235,6 +1246,9 @@ func (s *Service) loginWithIpatool(email, password, authCode string, anisetteDat
 
 		// Check if 2FA is required
 		if errors.Is(err, appstore.ErrAuthCodeRequired) {
+			if saveErr := s.SavePending2FA(email, &GSAPending2FA{AuthType: "appstore", CreatedAt: time.Now()}); saveErr != nil {
+				return nil, saveErr
+			}
 			log.Info().Str("email", email).Msg("Two-factor authentication required")
 			return &models.AuthResponse{
 				Success:     false,
@@ -1279,22 +1293,28 @@ func (s *Service) loginWithIpatool(email, password, authCode string, anisetteDat
 	}
 
 	// Check if account is valid
-	if output.Account.Email == "" {
+	return s.persistLoggedInAccount(email, output.Account)
+}
+
+// persistLoggedInAccount validates the account the store returned and stores the
+// session so later lookup and download calls can use it.
+func (s *Service) persistLoggedInAccount(email string, account appstore.Account) (*models.AuthResponse, error) {
+	log := logger.Logger
+
+	if account.Email == "" {
 		log.Error().Str("email", email).Msg("Login output has empty account email")
 		return nil, fmt.Errorf("login failed: invalid account from Apple")
 	}
 
-	log.Info().Str("email", email).Str("account_name", output.Account.Name).Str("storefront", output.Account.StoreFront).Msg("Login successful, saving account to keychain")
+	log.Info().Str("email", email).Str("account_name", account.Name).Str("storefront", account.StoreFront).Msg("Login successful, saving account to keychain")
 
-	// Save account to keychain
-	accountData, err := json.Marshal(output.Account)
+	accountData, err := json.Marshal(account)
 	if err != nil {
 		log.Error().Err(err).Str("email", email).Msg("Failed to marshal account data")
 		return nil, fmt.Errorf("failed to marshal account: %w", err)
 	}
 
-	err = s.keychain.Set(s.getAccountKey(email), accountData)
-	if err != nil {
+	if err := s.keychain.Set(s.getAccountKey(email), accountData); err != nil {
 		log.Error().Err(err).Str("email", email).Msg("Failed to save account to keychain")
 		return nil, fmt.Errorf("failed to save account: %w", err)
 	}
@@ -1318,13 +1338,29 @@ func (s *Service) Verify2FA(email, password, code string) (*models.AuthResponse,
 		return nil, fmt.Errorf("no pending 2FA session found. Please log in again")
 	}
 
-	if pending.AnisetteData == nil {
+	if pending.AuthType != "appstore" && pending.AnisetteData == nil {
 		return nil, fmt.Errorf("pending 2FA session is incomplete. Please log in again")
 	}
 
 	if time.Since(pending.CreatedAt) > 10*time.Minute {
 		s.ClearPending2FA(email)
 		return nil, fmt.Errorf("pending 2FA session expired. Please log in again")
+	}
+
+	if pending.AuthType == "appstore" {
+		// GSA already succeeded; only the App Store login is waiting for a code.
+		// Retry the App Store login directly with the code instead of GSA.
+		log.Info().Str("email", email).Msg("Completing App Store login with verification code")
+		resp, err := s.loginWithIpatool(email, password, code)
+		if err != nil {
+			log.Warn().Err(err).Str("email", email).Msg("App Store login with verification code failed")
+			return nil, fmt.Errorf("failed to complete App Store login with verification code: %w", err)
+		}
+		if resp != nil && resp.Requires2FA {
+			return resp, nil
+		}
+		s.ClearPending2FA(email)
+		return resp, nil
 	}
 
 	if err := s.verifyGSA2FA(email, code, pending); err != nil {
@@ -1345,7 +1381,7 @@ func (s *Service) Verify2FA(email, password, code string) (*models.AuthResponse,
 	s.ClearPending2FA(email)
 
 	log.Info().Str("email", email).Msg("GSA 2FA verification completed successfully, restarting GSA login")
-	return s.loginWithGSAAndAppStoreCode(email, password, pending.AnisetteURL, code)
+	return s.loginWithGSAAndAppStoreCode(email, password, pending.AnisetteURL, code, pending.ForSigning)
 }
 
 func (s *Service) verifyGSA2FA(email, code string, pending *GSAPending2FA) error {
@@ -1354,6 +1390,10 @@ func (s *Service) verifyGSA2FA(email, code string, pending *GSAPending2FA) error
 	}
 
 	identityToken := base64.StdEncoding.EncodeToString([]byte(pending.DSID + ":" + pending.IDMSToken))
+	userAgent := pending.AnisetteData.UserAgent
+	if strings.TrimSpace(userAgent) == "" {
+		userAgent = "Xcode"
+	}
 	headers := GSAValidateHeaders{
 		SecurityCode:        code,
 		XAppleIClientTime:   pending.AnisetteData.ClientTime,
@@ -1367,10 +1407,10 @@ func (s *Service) verifyGSA2FA(email, code string, pending *GSAPending2FA) error
 		XMMEDeviceID:        pending.AnisetteData.DeviceID,
 		AcceptLanguage:      "en-us",
 		XAppleLocale:        pending.AnisetteData.Locale,
-		UserAgent:           "Xcode",
+		UserAgent:           userAgent,
 	}
 
-	if pending.AuthType == "trustedDeviceSecondaryAuth" {
+	if pending.AuthType == "trustedDeviceSecondaryAuth" || pending.AuthType == "pushedCode" {
 		validateResult, err := GetGSAValidate(headers)
 		if err != nil {
 			return fmt.Errorf("failed to validate trusted device code: %w", err)
@@ -1396,6 +1436,10 @@ func requestTrustedDeviceCode(pending *GSAPending2FA) error {
 	}
 
 	identityToken := base64.StdEncoding.EncodeToString([]byte(pending.DSID + ":" + pending.IDMSToken))
+	userAgent := pending.AnisetteData.UserAgent
+	if strings.TrimSpace(userAgent) == "" {
+		userAgent = "Xcode"
+	}
 	headers := buildGSATwoFactorHeaders(GSAValidateHeaders{
 		XAppleIClientTime:   pending.AnisetteData.ClientTime,
 		XAppleIMd:           pending.AnisetteData.MD,
@@ -1408,7 +1452,7 @@ func requestTrustedDeviceCode(pending *GSAPending2FA) error {
 		XMMEDeviceID:        pending.AnisetteData.DeviceID,
 		AcceptLanguage:      "en-us",
 		XAppleLocale:        pending.AnisetteData.Locale,
-		UserAgent:           "Xcode",
+		UserAgent:           userAgent,
 	})
 
 	request, err := http.NewRequest("GET", "https://gsa.apple.com/auth/verify/trusteddevice", nil)
@@ -1422,17 +1466,17 @@ func requestTrustedDeviceCode(pending *GSAPending2FA) error {
 	}
 
 	client := &http.Client{
-		Timeout: 60 * time.Second,
-		Transport: &http.Transport{
-			Proxy:           http.ProxyFromEnvironment,
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
+		Timeout:   60 * time.Second,
+		Transport: newGSATransport(),
 	}
 	resp, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("failed to request trusted device code: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("trusted-device verification request returned HTTP %d", resp.StatusCode)
+	}
 
 	body, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
@@ -1442,7 +1486,7 @@ func requestTrustedDeviceCode(pending *GSAPending2FA) error {
 	var trustedDeviceResp map[string]interface{}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &trustedDeviceResp); err != nil {
-			logger.Logger.Debug().Str("body", string(body)).Msg("Trusted device 2FA response is not JSON")
+			logger.Logger.Debug().Int("body_len", len(body)).Msg("Trusted device 2FA response is not JSON")
 		} else if ecValue, ok := trustedDeviceResp["ec"]; ok {
 			errorCode := 0
 			switch value := ecValue.(type) {
@@ -1483,6 +1527,10 @@ func buildGSATwoFactorHeaders(hdr GSAValidateHeaders) http.Header {
 	if hdr.SecurityCode != "" {
 		headers.Set("Security-Code", hdr.SecurityCode)
 	}
+	userAgent := strings.TrimSpace(hdr.UserAgent)
+	if userAgent != "" && userAgent != "Xcode" {
+		setGSALoginHeaders(&http.Request{Header: headers}, GSAHeaders{XMMEClientInfo: hdr.XMMEClientInfo, UserAgent: userAgent, AcceptLanguage: hdr.AcceptLanguage})
+	}
 	return headers
 }
 
@@ -1494,6 +1542,62 @@ func (s *Service) CheckAuth(email string) (bool, error) {
 		return false, nil
 	}
 	return true, nil
+}
+
+// GetLoginSessionState reports what is stored locally for an account. It reads
+// the keychain only, so inspecting the state never contacts Apple.
+func (s *Service) GetLoginSessionState(email string) (*models.LoginSessionState, error) {
+	state := &models.LoginSessionState{Email: normalizeEmailKey(email)}
+
+	account, err := s.loadStoredAccount(email)
+	if err != nil {
+		return state, nil
+	}
+
+	state.HasAccount = true
+	state.StoreFront = account.StoreFront
+	state.HasAppStoreSession = hasUsableAppStoreSession(account)
+	state.HasStoredPassword = strings.TrimSpace(account.Password) != ""
+
+	if creds, credsErr := s.GetGSACredentials(email); credsErr == nil && creds != nil {
+		state.HasGSACredentials = strings.TrimSpace(creds.AuthToken) != ""
+	}
+	if anisette, anisetteErr := s.loadAnisetteData(email); anisetteErr == nil && anisette != nil {
+		state.HasAnisette = true
+	}
+	if metadata, metadataErr := s.loadDeviceMetadata(email); metadataErr == nil && metadata != nil {
+		state.HasDeviceMetadata = true
+	}
+
+	return state, nil
+}
+
+// ClearStoredSession removes the saved sign-in material for an account while
+// keeping the account listed, so the next store or signing action has to ask for
+// the password again instead of silently reusing a saved session.
+func (s *Service) ClearStoredSession(email string) error {
+	account, err := s.loadStoredAccount(email)
+	if err != nil {
+		return err
+	}
+
+	account.PasswordToken = ""
+	account.DirectoryServicesID = ""
+	account.Password = ""
+
+	data, err := json.Marshal(account)
+	if err != nil {
+		return fmt.Errorf("failed to encode the cleared account: %w", err)
+	}
+	if err := s.keychain.Set(s.getAccountKey(email), data); err != nil {
+		return fmt.Errorf("failed to save the cleared account: %w", err)
+	}
+
+	if err := s.clearGSACredentials(email); err != nil {
+		logger.Logger.Debug().Str("email", email).Msg("No GSA credentials were stored for this account")
+	}
+
+	return nil
 }
 
 func (s *Service) Logout(email string) error {
@@ -1570,11 +1674,16 @@ func (s *Service) SearchApps(keyword, limit, countryCode, storeType string) ([]m
 		StoreFront: countryCodeToStoreFront(countryCode),
 	}
 
+	platform := appstore.PlatformIPhone
+	if strings.EqualFold(storeType, "ipad") {
+		platform = appstore.PlatformIPad
+	}
+
 	output, err := s.appStore.Search(appstore.SearchInput{
-		Account:   account,
-		Term:      keyword,
-		Limit:     limitInt,
-		StoreType: storeType,
+		Account:  account,
+		Term:     keyword,
+		Limit:    limitInt,
+		Platform: platform,
 	})
 
 	if err != nil {
@@ -1630,7 +1739,7 @@ func appStoreEntityForStore(storeType string) string {
 }
 
 func (s *Service) GetAppDetails(bundleID, email string) (*models.AppDetails, error) {
-	account, err := s.getAccount(email)
+	account, err := s.getAccountForRead(email)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get account: %w", err)
 	}
@@ -1696,7 +1805,7 @@ func (s *Service) GetAppVersionHistory(bundleID, email string) (*models.AppVersi
 
 	log.Info().Str("bundle_id", bundleID).Msg("Fetching fresh version history from App Store")
 
-	account, err := s.getAccount(email)
+	account, err := s.getAccountForRead(email)
 	if err != nil {
 		log.Error().Err(err).Str("bundle_id", bundleID).Str("email", email).Msg("Failed to get account")
 		return nil, fmt.Errorf("failed to get account: %w", err)
@@ -1795,9 +1904,13 @@ func (s *Service) GetAppVersionHistory(bundleID, email string) (*models.AppVersi
 }
 
 // GetAppVersionHistoryWithProgress gets app version history and broadcasts progress via WebSocket
-func (s *Service) GetAppVersionHistoryWithProgress(bundleID, email, taskID string, broadcastFunc func(interface{})) (*models.AppVersionHistory, error) {
+func (s *Service) GetAppVersionHistoryWithProgress(bundleID, email, taskID string, broadcastFunc func(interface{}), forceRefresh bool) (*models.AppVersionHistory, error) {
 	log := logger.Logger
-	log.Info().Str("bundle_id", bundleID).Str("email", email).Str("task_id", taskID).Msg("Getting app version history with progress")
+	historyStartedAt := time.Now()
+	defer func() {
+		log.Info().Str("bundle_id", bundleID).Str("task_id", taskID).Bool("force_refresh", forceRefresh).Dur("elapsed", time.Since(historyStartedAt)).Msg("Version history request finished")
+	}()
+	log.Info().Str("bundle_id", bundleID).Str("email", email).Str("task_id", taskID).Bool("force_refresh", forceRefresh).Msg("Getting app version history with progress")
 
 	// Broadcast started
 	broadcastFunc(models.TaskProgress{
@@ -1810,8 +1923,9 @@ func (s *Service) GetAppVersionHistoryWithProgress(bundleID, email, taskID strin
 	})
 
 	cacheDuration := time.Hour
-	if !s.shouldFetchVersions(bundleID, cacheDuration) {
-		log.Info().Str("bundle_id", bundleID).Msg("Using cached version history (fetched within 1 hour)")
+	if !forceRefresh && !s.shouldFetchVersions(bundleID, cacheDuration) {
+		cacheStartedAt := time.Now()
+		log.Info().Str("bundle_id", bundleID).Msg("Version history cache is fresh; loading cached data")
 		cache, err := s.loadVersionCache(bundleID)
 		if err == nil && len(cache.Versions) > 0 {
 			time.Sleep(100 * time.Millisecond)
@@ -1840,7 +1954,7 @@ func (s *Service) GetAppVersionHistoryWithProgress(bundleID, email, taskID strin
 				latestVersion = cache.Versions[0].VersionID
 			}
 
-			log.Info().Str("bundle_id", bundleID).Int("version_count", len(versions)).Msg("Returning cached version history")
+			log.Info().Str("bundle_id", bundleID).Int("version_count", len(versions)).Dur("elapsed", time.Since(cacheStartedAt)).Msg("Returning cached version history")
 
 			broadcastFunc(models.TaskProgress{
 				Type:     "task_progress",
@@ -1858,14 +1972,16 @@ func (s *Service) GetAppVersionHistoryWithProgress(bundleID, email, taskID strin
 				Versions:      versions,
 			}, nil
 		}
-		log.Warn().Str("bundle_id", bundleID).Msg("Failed to load cache, fetching from App Store")
+		log.Warn().Err(err).Str("bundle_id", bundleID).Dur("elapsed", time.Since(cacheStartedAt)).Msg("Version history cache unavailable; fetching from App Store")
 	}
 
-	account, err := s.getAccount(email)
+	accountStartedAt := time.Now()
+	account, err := s.getAccountForRead(email)
 	if err != nil {
 		log.Error().Err(err).Str("bundle_id", bundleID).Str("email", email).Msg("Failed to get account")
 		return nil, fmt.Errorf("failed to get account: %w", err)
 	}
+	log.Debug().Str("bundle_id", bundleID).Dur("elapsed", time.Since(accountStartedAt)).Bool("has_store_session", hasUsableAppStoreSession(account)).Msg("Version history account session loaded")
 
 	// Progress: 10%
 	broadcastFunc(models.TaskProgress{
@@ -1877,17 +1993,19 @@ func (s *Service) GetAppVersionHistoryWithProgress(bundleID, email, taskID strin
 		Message:  "Looking up app information...",
 	})
 
+	lookupStartedAt := time.Now()
+	log.Info().Str("bundle_id", bundleID).Msg("Starting App Store app lookup for version history")
 	lookupOutput, err := s.appStore.Lookup(appstore.LookupInput{
 		Account:  *account,
 		BundleID: bundleID,
 	})
 	if err != nil {
-		log.Error().Err(err).Str("bundle_id", bundleID).Msg("Failed to lookup app")
+		log.Error().Err(err).Str("bundle_id", bundleID).Dur("elapsed", time.Since(lookupStartedAt)).Msg("Failed to lookup app")
 		return nil, fmt.Errorf("failed to lookup app: %w", err)
 	}
 
 	app := lookupOutput.App
-	log.Debug().Str("bundle_id", bundleID).Str("app_name", lookupOutput.App.Name).Msg("App lookup successful")
+	log.Info().Str("bundle_id", bundleID).Str("app_name", lookupOutput.App.Name).Int64("app_id", app.ID).Dur("elapsed", time.Since(lookupStartedAt)).Msg("App Store app lookup completed")
 
 	// Progress: 20%
 	broadcastFunc(models.TaskProgress{
@@ -1896,23 +2014,25 @@ func (s *Service) GetAppVersionHistoryWithProgress(bundleID, email, taskID strin
 		TaskType: "version_history",
 		Status:   "progress",
 		Progress: 20,
-		Message:  "Preparing version lookup...",
+		Message:  "Preparing Apple download authorization...",
 	})
 
-	versionsOutput, err := s.fetchVersionHistory(&account, email, bundleID, app, &versionHistoryProgressReporter{taskID: taskID, broadcastFunc: broadcastFunc})
+	progress := &versionHistoryProgressReporter{taskID: taskID, broadcastFunc: broadcastFunc}
+	versionListStartedAt := time.Now()
+	versionsOutput, err := s.fetchVersionHistory(&account, email, bundleID, app, progress)
 	if err != nil {
+		log.Error().Err(err).Str("bundle_id", bundleID).Dur("elapsed", time.Since(versionListStartedAt)).Msg("Version list phase failed")
 		return nil, err
 	}
+	log.Info().Str("bundle_id", bundleID).Int("version_count", len(versionsOutput.ExternalVersionIdentifiers)).Dur("elapsed", time.Since(versionListStartedAt)).Msg("Version list phase completed")
 
-	// Progress: 70%
-	broadcastFunc(models.TaskProgress{
-		Type:     "task_progress",
-		TaskID:   taskID,
-		TaskType: "version_history",
-		Status:   "progress",
-		Progress: 70,
-		Message:  "Loading version metadata...",
-	})
+	// Each version requires a separate pinned Store request so the release date
+	// comes from the package metadata instead of stale list data. The requests
+	// run in parallel, but report completion so a large history is observable.
+	totalMetadata := int32(len(versionsOutput.ExternalVersionIdentifiers))
+	var metadataCompleted atomic.Int32
+	metadataStartedAt := time.Now()
+	progress.send(70, fmt.Sprintf("Reading metadata for %d versions...", totalMetadata))
 
 	// Fetch all version metadata in parallel, then return combined result
 	var wg sync.WaitGroup
@@ -1922,6 +2042,15 @@ func (s *Service) GetAppVersionHistoryWithProgress(bundleID, email, taskID strin
 		wg.Add(1)
 		go func(versionID string) {
 			defer wg.Done()
+			defer func() {
+				completed := metadataCompleted.Add(1)
+				percent := int32(70)
+				if totalMetadata > 0 {
+					percent += completed * 20 / totalMetadata
+				}
+				progress.send(int(percent), fmt.Sprintf("Reading version metadata (%d/%d)...", completed, totalMetadata))
+			}()
+
 			md, mdErr := s.appStore.GetVersionMetadata(appstore.GetVersionMetadataInput{
 				Account:   *account,
 				App:       app,
@@ -1947,6 +2076,8 @@ func (s *Service) GetAppVersionHistoryWithProgress(bundleID, email, taskID strin
 
 	wg.Wait()
 	close(results)
+	log.Info().Str("bundle_id", bundleID).Int32("version_count", totalMetadata).Dur("elapsed", time.Since(metadataStartedAt)).Msg("Version metadata phase completed")
+	progress.send(90, "Version metadata loaded...")
 
 	versions := make([]models.AppVersion, 0, len(versionsOutput.ExternalVersionIdentifiers))
 	for v := range results {
@@ -1999,7 +2130,7 @@ func (s *Service) GetAppVersionHistoryWithProgress(bundleID, email, taskID strin
 }
 
 func (s *Service) GetVersionDetails(bundleID, email string, versionIDs []string) ([]models.AppVersion, error) {
-	account, err := s.getAccount(email)
+	account, err := s.getAccountForRead(email)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get account: %w", err)
 	}
@@ -2043,7 +2174,7 @@ func (s *Service) GetVersionDetails(bundleID, email string, versionIDs []string)
 }
 
 func (s *Service) GetCountryCode(email string) (string, error) {
-	account, err := s.getAccount(email)
+	account, err := s.getAccountForRead(email)
 	if err != nil {
 		return "", fmt.Errorf("failed to get account: %w", err)
 	}
@@ -2060,7 +2191,7 @@ func (s *Service) CheckLicense(bundleID, email string) (bool, error) {
 	log := logger.Logger
 	log.Info().Str("bundle_id", bundleID).Str("email", email).Msg("Checking app license")
 
-	account, err := s.getAccount(email)
+	account, err := s.getAccountForRead(email)
 	if err != nil {
 		log.Error().Err(err).Str("bundle_id", bundleID).Msg("Failed to get account")
 		return false, fmt.Errorf("failed to get account: %w", err)
@@ -2617,6 +2748,8 @@ func (s *Service) sendGSAAppTokensRequest(params map[string]interface{}, anisett
 	headers := GSAValidateHeaders{}
 	if anisetteData != nil {
 		headers.XMMEClientInfo = anisetteData.ClientInfo
+		headers.UserAgent = anisetteData.UserAgent
+		headers.ServiceURL = anisetteData.GSAServiceURL
 		log.Debug().
 			Str("X-MMe-Client-Info", anisetteData.ClientInfo).
 			Msg("Setting X-MMe-Client-Info header for apptokens request")
@@ -2685,7 +2818,10 @@ func hasUsableAppStoreSession(account *appstore.Account) bool {
 		len(strings.TrimSpace(account.StoreFront)) > 0
 }
 
-func (s *Service) getAccount(email string) (*appstore.Account, error) {
+// getAccountForRead returns the stored account for queries that only read store
+// data. It never contacts Apple, so a stale session surfaces as an error instead
+// of a silent re-authentication that would sign the user in again unasked.
+func (s *Service) getAccountForRead(email string) (*appstore.Account, error) {
 	account, err := s.loadStoredAccount(email)
 	if err != nil {
 		return nil, err
@@ -2699,12 +2835,89 @@ func (s *Service) getAccount(email string) (*appstore.Account, error) {
 			Bool("has_password_token", len(strings.TrimSpace(account.PasswordToken)) > 0).
 			Bool("has_dsid", len(strings.TrimSpace(account.DirectoryServicesID)) > 0).
 			Bool("has_storefront", len(strings.TrimSpace(account.StoreFront)) > 0).
-			Msg("Stored account is missing App Store session fields; refusing automatic re-login to avoid 2FA prompts")
+			Msg("Stored account is missing App Store session fields; skipping automatic refresh for a read-only query")
+		return nil, fmt.Errorf("stored account is missing required App Store session data. Please log in again")
+	}
+
+	return account, nil
+}
+
+func (s *Service) getAccount(email string) (*appstore.Account, error) {
+	account, err := s.loadStoredAccount(email)
+	if err != nil {
+		return nil, err
+	}
+
+	s.restoreAppStoreAccountContext(email)
+
+	if !hasUsableAppStoreSession(account) {
+		if refreshed, refreshErr := s.tryRefreshAppStoreSession(email); refreshed != nil {
+			return refreshed, nil
+		} else if refreshErr != "" {
+			return nil, fmt.Errorf("%s (App Store session refresh failed: %s)", "stored account is missing required App Store session data. Please log in again", refreshErr)
+		}
+		logger.Logger.Warn().
+			Str("email", email).
+			Bool("has_password_token", len(strings.TrimSpace(account.PasswordToken)) > 0).
+			Bool("has_dsid", len(strings.TrimSpace(account.DirectoryServicesID)) > 0).
+			Bool("has_storefront", len(strings.TrimSpace(account.StoreFront)) > 0).
+			Msg("Stored account is missing App Store session fields; automatic refresh failed")
 		return nil, fmt.Errorf("stored account is missing required App Store session data. Please log in again")
 	}
 
 	// Return a pointer to the account
 	return account, nil
+}
+
+// tryRefreshAppStoreSession attempts to rebuild a complete App Store session using
+// the password saved during login. Returns the refreshed account plus a human-readable
+// failure reason (empty string when the refresh succeeded).
+func (s *Service) tryRefreshAppStoreSession(email string) (*appstore.Account, string) {
+	s.appStoreReloginMu.Lock()
+	lastFail, hasFail := s.appStoreReloginFail[email]
+	s.appStoreReloginMu.Unlock()
+	if hasFail && time.Since(lastFail) < 5*time.Minute {
+		logger.Logger.Warn().Str("email", email).Msg("Skipping automatic App Store session refresh: recent refresh failure")
+		return nil, "skipped after recent refresh failure"
+	}
+
+	account, err := s.loadStoredAccount(email)
+	if err != nil || strings.TrimSpace(account.Password) == "" {
+		return nil, "no stored password available for session refresh"
+	}
+
+	logger.Logger.Info().Str("email", email).Msg("Attempting automatic App Store session refresh")
+	resp, err := s.loginWithIpatool(email, account.Password, "")
+	if err != nil {
+		logger.Logger.Warn().Err(err).Str("email", email).Msg("Automatic App Store session refresh failed")
+		s.recordAppStoreReloginFail(email)
+		return nil, err.Error()
+	}
+	if resp == nil || !resp.Success {
+		if resp != nil && resp.Requires2FA {
+			logger.Logger.Warn().Str("email", email).Msg("Automatic App Store session refresh requires 2FA; user must log in again")
+			return nil, "two-factor authentication is required"
+		}
+		logger.Logger.Warn().Str("email", email).Msg("Automatic App Store session refresh rejected by App Store")
+		s.recordAppStoreReloginFail(email)
+		return nil, "rejected by App Store"
+	}
+
+	refreshed, err := s.loadStoredAccount(email)
+	if err != nil || !hasUsableAppStoreSession(refreshed) {
+		logger.Logger.Warn().Str("email", email).Msg("Automatic App Store session refresh did not yield a usable session")
+		s.recordAppStoreReloginFail(email)
+		return nil, "refresh did not produce a usable session"
+	}
+
+	logger.Logger.Info().Str("email", email).Msg("App Store session refreshed automatically")
+	return refreshed, ""
+}
+
+func (s *Service) recordAppStoreReloginFail(email string) {
+	s.appStoreReloginMu.Lock()
+	s.appStoreReloginFail[email] = time.Now()
+	s.appStoreReloginMu.Unlock()
 }
 
 func (s *Service) extractCountryCode(storefront string) (string, error) {
@@ -2814,6 +3027,11 @@ func (s *Service) GetAppSubtitle(bundleID, countryCode string) (string, error) {
 
 	subtitle, err := fetchAppStoreSubtitle(bundleID, countryCode)
 	if err != nil {
+		logger.Logger.Warn().
+			Str("bundle_id", bundleID).
+			Str("country", countryCode).
+			Err(err).
+			Msg("Failed to fetch App Store subtitle")
 		return "", err
 	}
 
@@ -2864,6 +3082,9 @@ func (s *Service) GetAppSubtitles(bundleIDs []string, countryCode string) map[st
 					resultsMu.Lock()
 					results[bundleID] = subtitle
 					resultsMu.Unlock()
+					logger.Logger.Debug().Str("bundle_id", bundleID).Str("country", countryCode).Int("subtitle_length", len(subtitle)).Msg("App Store subtitle fetched")
+				} else if err == nil {
+					logger.Logger.Debug().Str("bundle_id", bundleID).Str("country", countryCode).Msg("App Store subtitle response was empty")
 				}
 			}
 		}()
@@ -2903,11 +3124,20 @@ func fetchAppStoreSubtitle(bundleID, countryCode string) (string, error) {
 	}
 
 	lookupURL := fmt.Sprintf("https://itunes.apple.com/lookup?bundleId=%s&country=%s", url.QueryEscape(bundleID), url.QueryEscape(countryCode))
-	lookupResp, err := http.Get(lookupURL)
+	lookupReq, err := http.NewRequest(http.MethodGet, lookupURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("create app id lookup failed: %w", err)
+	}
+	lookupReq.Header.Set("User-Agent", "Mozilla/5.0")
+	lookupStarted := time.Now()
+	lookupResp, err := appSubtitleHTTPClient.Do(lookupReq)
 	if err != nil {
 		return "", fmt.Errorf("lookup app id failed: %w", err)
 	}
 	defer lookupResp.Body.Close()
+	logger.Logger.Debug().Str("bundle_id", bundleID).Str("country", countryCode).
+		Int("status", lookupResp.StatusCode).Dur("elapsed", time.Since(lookupStarted)).
+		Msg("App subtitle ID lookup response")
 
 	if lookupResp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("lookup app id returned status: %d", lookupResp.StatusCode)
@@ -2928,15 +3158,33 @@ func fetchAppStoreSubtitle(bundleID, countryCode string) (string, error) {
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	req.Header.Set("Accept-Language", "zh-Hans-CN,zh;q=0.9,en;q=0.8")
+	storefront := countryCodeToStoreFront(countryCode)
+	if countryCode == "us" || storefront != countryCodeToStoreFront("us") {
+		req.Header.Set("X-Apple-Store-Front", storefront)
+	}
 
+	pageStarted := time.Now()
 	resp, err := appSubtitleHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch app store page failed: %w", err)
 	}
 	defer resp.Body.Close()
+	finalURL := appURL
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL.String()
+	}
+	logger.Logger.Debug().Str("bundle_id", bundleID).Str("country", countryCode).
+		Int("status", resp.StatusCode).Str("final_url", finalURL).
+		Str("content_type", resp.Header.Get("Content-Type")).Dur("elapsed", time.Since(pageStarted)).
+		Msg("App subtitle page response")
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("app store page returned status: %d", resp.StatusCode)
+		return "", fmt.Errorf("app store page returned status %d at %s", resp.StatusCode, finalURL)
+	}
+	finalPageURL, err := url.Parse(finalURL)
+	if err != nil || !strings.HasPrefix(finalPageURL.Path, "/"+countryCode+"/app/") ||
+		!strings.HasSuffix(strings.TrimRight(finalPageURL.Path, "/"), fmt.Sprintf("/id%d", lookupResult.Results[0].TrackId)) {
+		return "", fmt.Errorf("app store subtitle request redirected outside the selected app and region: %s", finalURL)
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -2944,9 +3192,36 @@ func fetchAppStoreSubtitle(bundleID, countryCode string) (string, error) {
 		return "", fmt.Errorf("read app store page failed: %w", err)
 	}
 
+	if bytes.HasPrefix(bytes.TrimSpace(body), []byte("{")) {
+		var catalog struct {
+			StorePlatformData map[string]struct {
+				Meta struct {
+					Storefront struct {
+						CountryCode string `json:"cc"`
+					} `json:"storefront"`
+				} `json:"meta"`
+				Results map[string]struct {
+					Subtitle string `json:"subtitle"`
+				} `json:"results"`
+			} `json:"storePlatformData"`
+		}
+		if err := json.Unmarshal(body, &catalog); err != nil {
+			return "", fmt.Errorf("decode app store subtitle failed: %w", err)
+		}
+		product := catalog.StorePlatformData["product-dv"]
+		if country := product.Meta.Storefront.CountryCode; country != "" && !strings.EqualFold(country, countryCode) {
+			return "", fmt.Errorf("app store subtitle returned country %s instead of %s", country, countryCode)
+		}
+		appID := strconv.FormatInt(lookupResult.Results[0].TrackId, 10)
+		if app, ok := product.Results[appID]; ok {
+			return strings.TrimSpace(app.Subtitle), nil
+		}
+		return "", fmt.Errorf("app %s not found in subtitle response from %s", appID, finalURL)
+	}
+
 	match := regexp.MustCompile(`<p class="subtitle[^"]*">([^<]+)</p>`).FindSubmatch(body)
 	if len(match) < 2 {
-		return "", fmt.Errorf("subtitle not found")
+		return "", fmt.Errorf("subtitle not found at %s (%d bytes, %s)", finalURL, len(body), time.Since(pageStarted).Round(time.Millisecond))
 	}
 
 	return strings.TrimSpace(html.UnescapeString(string(match[1]))), nil
@@ -3040,16 +3315,9 @@ func (s *Service) refreshAccountToken(email string, account *appstore.Account) (
 		Msg("Refreshing App Store password token via full login; this may trigger Apple 2FA")
 
 	// Re-login to get a fresh token
-	anisetteData := s.loadAppStoreAnisetteData(email)
-	if anisetteData != nil {
-		s.setAppStoreDeviceIDOverride(anisetteData.DeviceID)
-	}
-
-	output, err := s.withTemporaryAppStoreHeaders(anisetteData, func() (appstore.LoginOutput, error) {
-		return s.appStore.Login(appstore.LoginInput{
-			Email:    email,
-			Password: password,
-		})
+	output, err := s.appStore.Login(appstore.LoginInput{
+		Email:    email,
+		Password: password,
 	})
 	if err != nil {
 		if errors.Is(err, appstore.ErrAuthCodeRequired) {
@@ -3071,11 +3339,37 @@ func (s *Service) refreshAccountToken(email string, account *appstore.Account) (
 	return &output.Account, nil
 }
 
+// DownloadOptions selects the app build to fetch and where to write it.
+// ExternalVersionID pins the request to one App Store build; leaving it empty
+// asks the store for the latest build. StoreItemID is only consulted when the
+// bundle identifier lookup fails, which is what happens to delisted apps.
+type DownloadOptions struct {
+	BundleID          string
+	Email             string
+	OutputDir         string
+	ExternalVersionID string
+	StoreItemID       int64
+}
+
+// ErrNotOwnedByAccount reports that the store holds no license for the requested
+// app under the signed-in account. For an app that is already installed this
+// means the wrong account is signed in rather than that the app must be bought.
+var ErrNotOwnedByAccount = errors.New("the signed-in Apple Account does not own this app")
+
 // Download downloads an IPA file from the App Store
-func (s *Service) Download(ctx context.Context, bundleID, email, outputDir string, progressChan chan<- models.DownloadProgress) error {
+func (s *Service) Download(ctx context.Context, opts DownloadOptions, progressChan chan<- models.DownloadProgress) error {
 	log := logger.Logger
 
-	log.Info().Str("bundle_id", bundleID).Str("email", email).Str("output_dir", outputDir).Msg("Starting app download")
+	bundleID := opts.BundleID
+	email := opts.Email
+	outputDir := opts.OutputDir
+
+	log.Info().
+		Str("bundle_id", bundleID).
+		Str("email", email).
+		Str("output_dir", outputDir).
+		Str("external_version_id", opts.ExternalVersionID).
+		Msg("Starting app download")
 
 	// Check if context is cancelled
 	select {
@@ -3114,15 +3408,23 @@ func (s *Service) Download(ctx context.Context, bundleID, email, outputDir strin
 	}
 
 	// Lookup app
+	var app appstore.App
 	lookupOutput, err := s.appStore.Lookup(appstore.LookupInput{
 		Account:  *account,
 		BundleID: bundleID,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to lookup app: %w", err)
-	}
+		if opts.StoreItemID <= 0 {
+			return fmt.Errorf("failed to lookup app: %w", err)
+		}
 
-	app := lookupOutput.App
+		// Delisted apps drop out of bundle-identifier lookup but stay addressable by
+		// catalog id, which the device metadata provides.
+		log.Warn().Err(err).Int64("store_item_id", opts.StoreItemID).Msg("Bundle lookup failed, falling back to catalog item id")
+		app = appstore.App{ID: opts.StoreItemID}
+	} else {
+		app = lookupOutput.App
+	}
 
 	// Check if context is cancelled
 	select {
@@ -3176,33 +3478,55 @@ func (s *Service) Download(ctx context.Context, bundleID, email, outputDir strin
 	if progressChan != nil {
 		log.Info().Msg("progressChan is NOT nil, creating callback")
 		var lastPercent int
+		var lastBytes int64
+		lastProgressAt := time.Now()
 		progressCallback = func(current, total int64) {
 			if total <= 0 {
 				log.Warn().Int64("total", total).Msg("Download progress callback: total is 0")
 				return
 			}
 			percent := int(float64(current) / float64(total) * 100)
-			log.Debug().Int64("current", current).Int64("total", total).Int("percent", percent).Int("lastPercent", lastPercent).Msg("Download progress callback invoked")
+			now := time.Now()
+			elapsed := now.Sub(lastProgressAt).Seconds()
+			speed := 0.0
+			if elapsed > 0 && current >= lastBytes {
+				speed = float64(current-lastBytes) / elapsed
+			}
+			log.Debug().Int64("current", current).Int64("total", total).Int("percent", percent).Float64("speed_bytes_per_second", speed).Int("lastPercent", lastPercent).Msg("Download progress callback invoked")
 			if percent != lastPercent {
 				lastPercent = percent
+				lastBytes = current
+				lastProgressAt = now
 				progressChan <- models.DownloadProgress{
-					Status:   "progress",
-					Message:  "Downloading IPA file...",
-					Progress: float64(percent),
+					Status:              "progress",
+					Message:             "Downloading IPA file...",
+					Progress:            float64(percent),
+					BytesDownloaded:     current,
+					TotalBytes:          total,
+					SpeedBytesPerSecond: speed,
 				}
 			}
 		}
 	}
 
-	// Download the IPA
+	// Download the IPA. The requested build identifier is part of every attempt so
+	// that a retry cannot quietly fall back to the latest build.
+	downloadInput := appstore.DownloadInput{
+		Context:           ctx,
+		Account:           *account,
+		App:               app,
+		OutputPath:        outputPath,
+		Progress:          nil,
+		ProgressCallback:  progressCallback,
+		ExternalVersionID: opts.ExternalVersionID,
+	}
+	doDownload := func() (appstore.DownloadOutput, error) {
+		downloadInput.Account = *account
+		return s.appStore.Download(downloadInput)
+	}
+
 	log.Info().Bool("has_callback", progressCallback != nil).Msg("Calling appstore.Download")
-	output, err := s.appStore.Download(appstore.DownloadInput{
-		Account:          *account,
-		App:              app,
-		OutputPath:       outputPath,
-		Progress:         nil,
-		ProgressCallback: progressCallback,
-	})
+	output, err := doDownload()
 
 	// Handle download errors with retry logic
 	if err != nil {
@@ -3219,13 +3543,7 @@ func (s *Service) Download(ctx context.Context, bundleID, email, outputDir strin
 
 			if newAccount, refreshErr := s.refreshAccountToken(email, account); refreshErr == nil {
 				account = newAccount
-				output, err = s.appStore.Download(appstore.DownloadInput{
-					Account:          *account,
-					App:              app,
-					OutputPath:       outputPath,
-					Progress:         nil,
-					ProgressCallback: progressCallback,
-				})
+				output, err = doDownload()
 			}
 		}
 
@@ -3241,19 +3559,23 @@ func (s *Service) Download(ctx context.Context, bundleID, email, outputDir strin
 
 			if newAccount, refreshErr := s.refreshAccountToken(email, account); refreshErr == nil {
 				account = newAccount
-				output, err = s.appStore.Download(appstore.DownloadInput{
-					Account:          *account,
-					App:              app,
-					OutputPath:       outputPath,
-					Progress:         nil,
-					ProgressCallback: progressCallback,
-				})
+				output, err = doDownload()
 			} else {
 				log.Warn().Err(refreshErr).Str("bundle_id", bundleID).Msg("Token refresh after unknown download error failed")
 			}
 		}
 
 		if errors.Is(err, appstore.ErrLicenseRequired) {
+			if opts.ExternalVersionID != "" {
+				// The requested build comes from an app that is already installed, so a
+				// license exists for the account that installed it. A missing license
+				// means a different account is signed in, and asking the store to acquire
+				// one would push an authentication prompt to the user's devices instead
+				// of fixing the account mismatch.
+				log.Warn().Str("bundle_id", bundleID).Msg("Requested build is not licensed to the signed-in account")
+				return fmt.Errorf("%w: sign in with the Apple Account that purchased it", ErrNotOwnedByAccount)
+			}
+
 			licenseErr := s.acquireLicenseForDownload(&account, email, bundleID, app, progressChan)
 			if licenseErr != nil {
 				return licenseErr
@@ -3266,13 +3588,7 @@ func (s *Service) Download(ctx context.Context, bundleID, email, outputDir strin
 				}
 			}
 
-			output, err = s.appStore.Download(appstore.DownloadInput{
-				Account:          *account,
-				App:              app,
-				OutputPath:       outputPath,
-				Progress:         nil,
-				ProgressCallback: progressCallback,
-			})
+			output, err = doDownload()
 
 			if err != nil && errors.Is(err, appstore.ErrPasswordTokenExpired) {
 				log.Warn().Err(err).Str("bundle_id", bundleID).Msg("Password token expired during licensed download retry - attempting refresh and retry")
@@ -3286,18 +3602,17 @@ func (s *Service) Download(ctx context.Context, bundleID, email, outputDir strin
 
 				if newAccount, refreshErr := s.refreshAccountToken(email, account); refreshErr == nil {
 					account = newAccount
-					output, err = s.appStore.Download(appstore.DownloadInput{
-						Account:          *account,
-						App:              app,
-						OutputPath:       outputPath,
-						Progress:         nil,
-						ProgressCallback: progressCallback,
-					})
+					output, err = doDownload()
 				}
 			}
 		}
 
 		if err != nil && app.Price == 0 && isUnknownAppStoreDownloadError(err) {
+			if opts.ExternalVersionID != "" {
+				// Keep a pinned request from turning into a purchase attempt.
+				return fmt.Errorf("the App Store could not serve the requested build for this account: %w", err)
+			}
+
 			log.Warn().Err(err).Str("bundle_id", bundleID).Msg("Unknown App Store download error for free app - attempting license acquisition fallback")
 
 			licenseErr := s.acquireLicenseForDownload(&account, email, bundleID, app, progressChan)
@@ -3312,13 +3627,7 @@ func (s *Service) Download(ctx context.Context, bundleID, email, outputDir strin
 				}
 			}
 
-			output, err = s.appStore.Download(appstore.DownloadInput{
-				Account:          *account,
-				App:              app,
-				OutputPath:       outputPath,
-				Progress:         nil,
-				ProgressCallback: progressCallback,
-			})
+			output, err = doDownload()
 		}
 	}
 
@@ -3327,6 +3636,10 @@ func (s *Service) Download(ctx context.Context, bundleID, email, outputDir strin
 	}
 
 	log.Info().Str("bundle_id", bundleID).Str("path", output.DestinationPath).Msg("Download completed successfully")
+
+	if err := verifyDownloadedBuild(output.DestinationPath, opts.ExternalVersionID); err != nil {
+		return err
+	}
 
 	// Send 100% progress for smooth completion
 	if progressChan != nil {
@@ -3347,4 +3660,73 @@ func (s *Service) Download(ctx context.Context, bundleID, email, outputDir strin
 	}
 
 	return nil
+}
+
+// verifyDownloadedBuild compares the build identifier recorded inside the
+// downloaded package with the build that was requested. The store writes the
+// metadata it served the package with into the IPA, so a mismatch means the
+// request was answered with a different build than the one asked for.
+func verifyDownloadedBuild(path, requestedVersionID string) error {
+	if requestedVersionID == "" {
+		return nil
+	}
+
+	actual, err := readPackageStoreVersionID(path)
+	if err != nil {
+		logger.Logger.Debug().Err(err).Str("path", path).Msg("Could not read the downloaded package metadata")
+		return nil
+	}
+	if actual == "" {
+		// Absent metadata is not proof of a mismatch.
+		logger.Logger.Debug().Str("path", path).Msg("Downloaded package carries no store version identifier to verify")
+		return nil
+	}
+	if actual == requestedVersionID {
+		return nil
+	}
+
+	if removeErr := os.Remove(path); removeErr != nil {
+		logger.Logger.Warn().Err(removeErr).Str("path", path).Msg("Failed to remove the mismatched download")
+	}
+
+	return fmt.Errorf(
+		"downloaded build does not match the requested version: requested %s, received %s (removed %s)",
+		requestedVersionID, actual, path,
+	)
+}
+
+// readPackageStoreVersionID reads softwareVersionExternalIdentifier from the
+// iTunesMetadata inside a downloaded package.
+func readPackageStoreVersionID(path string) (string, error) {
+	reader, err := zip.OpenReader(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to open package: %w", err)
+	}
+	defer reader.Close()
+
+	for _, file := range reader.File {
+		if !strings.HasSuffix(file.Name, "iTunesMetadata.plist") {
+			continue
+		}
+
+		handle, err := file.Open()
+		if err != nil {
+			return "", fmt.Errorf("failed to open metadata: %w", err)
+		}
+
+		data, readErr := io.ReadAll(handle)
+		handle.Close()
+		if readErr != nil {
+			return "", fmt.Errorf("failed to read metadata: %w", readErr)
+		}
+
+		var metadata map[string]interface{}
+		if _, err := plist.Unmarshal(data, &metadata); err != nil {
+			return "", fmt.Errorf("failed to parse metadata: %w", err)
+		}
+
+		return models.NormalizeStoreVersionID(metadata["softwareVersionExternalIdentifier"]), nil
+	}
+
+	return "", nil
 }

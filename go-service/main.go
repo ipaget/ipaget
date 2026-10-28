@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,10 +28,11 @@ import (
 
 	"ipaget-service/internal/app"
 	"ipaget-service/internal/certifi"
-	"ipaget-service/internal/device"
+	devicepkg "ipaget-service/internal/device"
 	"ipaget-service/internal/ipa"
 	"ipaget-service/internal/logger"
 	"ipaget-service/internal/models"
+	plistutil "ipaget-service/internal/plist"
 	"ipaget-service/internal/sign"
 	"ipaget-service/internal/store"
 	wsHub "ipaget-service/internal/websocket"
@@ -38,16 +41,18 @@ import (
 	"github.com/danielpaulus/go-ios/ios/afc"
 	coredeviceinfo "github.com/danielpaulus/go-ios/ios/deviceinfo"
 	"github.com/danielpaulus/go-ios/ios/instruments"
+	"github.com/danielpaulus/go-ios/ios/tunnel"
 	// crashreport is intentionally not used here. We implement the minimal
 	// crashreportmover + crashreportcopymobile logic to ensure connections
 	// are properly closed per request.
 )
 
 var (
-	deviceService *device.Service
+	deviceService *devicepkg.Service
 	appService    *app.Service
 	storeService  *store.Service
 	ipaService    *ipa.Service
+	plistService  *plistutil.Service
 	certService   *certifi.Service
 	hub           *wsHub.Hub
 	upgrader      = websocket.Upgrader{
@@ -55,16 +60,32 @@ var (
 			return true
 		},
 	}
-	instanceID        string
-	cancelTasksMutex  sync.RWMutex
-	cancelTasks       = make(map[string]chan struct{})
-	cancelledTasksSet = make(map[string]bool)
+	instanceID          string
+	appServiceConfigDir string
+	cancelTasksMutex    sync.RWMutex
+	cancelTasks         = make(map[string]chan struct{})
+	cancelledTasksSet   = make(map[string]bool)
+	taskStatesMutex     sync.RWMutex
+	taskStates          = make(map[string]models.TaskProgress)
+	embeddedTunnelMgr   *tunnel.TunnelManager
+
+	fullDeviceInfoCacheTTL = 30 * time.Second
+	fullDeviceInfoCache    = struct {
+		sync.Mutex
+		entries map[string]fullDeviceInfoCacheEntry
+	}{entries: make(map[string]fullDeviceInfoCacheEntry)}
 )
+
+type fullDeviceInfoCacheEntry struct {
+	data      map[string]interface{}
+	expiresAt time.Time
+	complete  bool
+}
 
 func main() {
 	// Parse command line flags
 	verbose := flag.Bool("v", false, "enable verbose/debug logging")
-	port := flag.String("port", "", "service port (default: 8765)")
+	port := flag.String("port", "", "service port (default: automatic)")
 	host := flag.String("host", "", "service host (default: 127.0.0.1)")
 	configDir := flag.String("config", "", "config directory")
 	flag.Parse()
@@ -103,10 +124,12 @@ func main() {
 	if serviceConfigDir == "" {
 		serviceConfigDir = getDefaultConfigDir()
 	}
+	appServiceConfigDir = serviceConfigDir
 	os.MkdirAll(serviceConfigDir, 0755)
-	configureOutboundProxy(serviceConfigDir)
+	configureOutboundProxy()
+	initEmbeddedTunnel(serviceConfigDir)
 
-	deviceService = device.NewService(serviceConfigDir)
+	deviceService = devicepkg.NewService(serviceConfigDir)
 	appService = app.NewService()
 	// Define a callback to ensure/refresh free-sign certificate after GSA success
 	// This callback receives the GSA session credentials (DSID/AuthToken) from successful authentication
@@ -175,6 +198,7 @@ func main() {
 
 	storeService = store.NewService(serviceConfigDir, onGSAAuthenticated)
 	ipaService = ipa.NewService()
+	plistService = plistutil.NewService()
 	hub = wsHub.NewHub()
 
 	// Generate a 4-digit random instance ID at startup
@@ -247,22 +271,32 @@ func main() {
 	r.GET("/ws/logs", handleLogsWebSocket)
 
 	// ipatool / App Store
-	r.POST("/auth/login", handleLogin)
-	r.POST("/auth/verify2fa", handleVerify2FA)
-	r.POST("/auth/logout", handleLogout)
-	r.GET("/auth/check", handleCheckAuth)
-	r.GET("/auth/info", handleGetAccountInfo)
-	r.GET("/auth/accounts", handleListAccounts)
-	r.GET("/auth/country", handleGetCountryCode)
-	r.GET("/apps/check-license", handleCheckLicense)
-	r.GET("/apps/top", handleGetTopApps)
-	r.GET("/apps/search", handleSearchApps)
-	r.GET("/apps/subtitles", handleGetAppSubtitles)
-	r.GET("/apps/details", handleGetAppDetails)
-	r.GET("/apps/versions", handleGetAppVersions)
-	r.POST("/apps/version-details", handleGetVersionDetails)
-	r.POST("/apps/download", handleDownloadApp)
-	r.POST("/tasks/:taskId/cancel", handleCancelTask)
+	// Reload proxy settings on each App Store request so proxy changes in the
+	// settings UI take effect without restarting the Go service.
+	appStoreGroup := r.Group("")
+	appStoreGroup.Use(func(c *gin.Context) {
+		configureOutboundProxy()
+		c.Next()
+	})
+	appStoreGroup.POST("/auth/login", handleLogin)
+	appStoreGroup.POST("/auth/verify2fa", handleVerify2FA)
+	appStoreGroup.POST("/auth/logout", handleLogout)
+	appStoreGroup.GET("/auth/check", handleCheckAuth)
+	appStoreGroup.GET("/auth/session", handleGetLoginSessionState)
+	appStoreGroup.POST("/auth/session/clear", handleClearLoginSession)
+	appStoreGroup.GET("/auth/info", handleGetAccountInfo)
+	appStoreGroup.GET("/auth/accounts", handleListAccounts)
+	appStoreGroup.GET("/auth/country", handleGetCountryCode)
+	appStoreGroup.GET("/apps/check-license", handleCheckLicense)
+	appStoreGroup.GET("/apps/top", handleGetTopApps)
+	appStoreGroup.GET("/apps/search", handleSearchApps)
+	appStoreGroup.GET("/apps/subtitles", handleGetAppSubtitles)
+	appStoreGroup.GET("/apps/details", handleGetAppDetails)
+	appStoreGroup.GET("/apps/versions", handleGetAppVersions)
+	appStoreGroup.POST("/apps/version-details", handleGetVersionDetails)
+	appStoreGroup.POST("/apps/download", handleDownloadApp)
+	appStoreGroup.GET("/tasks/:taskId", handleGetTaskStatus)
+	appStoreGroup.POST("/tasks/:taskId/cancel", handleCancelTask)
 
 	// IPA file parsing
 	r.POST("/ipa/parse", handleParseIPA)
@@ -270,6 +304,12 @@ func main() {
 	r.POST("/ipa/extract-file", handleExtractFile)
 	r.POST("/ipa/extract-files", handleExtractFiles)
 	r.POST("/ipa/sign", handleSignIPA)
+
+	// Plist parsing and editing
+	r.POST("/plist/parse", handleParsePlist)
+	r.POST("/plist/write", handleWritePlist)
+	r.POST("/plist/render-xml", handleRenderPlistXML)
+	r.POST("/plist/parse-xml", handleParsePlistXML)
 
 	// Certificate management
 	r.POST("/certs/import-p12", handleImportP12Cert)
@@ -281,12 +321,21 @@ func main() {
 	r.DELETE("/certs/:id", handleDeleteCert)
 	r.POST("/certs/:id/set-default", handleSetDefaultCert)
 
-	address := serviceHost + ":" + servicePort
+	address := net.JoinHostPort(serviceHost, servicePort)
+	listener, err := net.Listen("tcp", address)
+	if err != nil && servicePort == "8765" {
+		logger.Warn().Err(err).Msg("Default port is unavailable, selecting an automatic port")
+		listener, err = net.Listen("tcp", net.JoinHostPort(serviceHost, "0"))
+	}
+	if err != nil {
+		logger.Fatal().Err(err).Str("address", address).Msg("Failed to bind server")
+	}
+	actualAddress := listener.Addr().String()
 	logger.Info().
-		Str("address", address).
+		Str("address", actualAddress).
 		Str("config_dir", serviceConfigDir).
 		Msg("Starting iPAGet service")
-	if err := r.Run(address); err != nil {
+	if err := r.RunListener(listener); err != nil {
 		logger.Fatal().Err(err).Msg("Failed to start server")
 	}
 }
@@ -315,11 +364,13 @@ func getDefaultConfigDir() string {
 	}
 }
 
-func configureOutboundProxy(configDir string) {
-	configPath := filepath.Join(configDir, "config.json")
+// readConfiguredProxyURL returns the outbound proxy from config.json, or an
+// empty string when none is configured.
+func readConfiguredProxyURL() (string, error) {
+	configPath := filepath.Join(appServiceConfigDir, "config.json")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return
+		return "", err
 	}
 
 	var config struct {
@@ -329,18 +380,64 @@ func configureOutboundProxy(configDir string) {
 	}
 
 	if err := json.Unmarshal(data, &config); err != nil {
-		logger.Warn().Err(err).Str("config_path", configPath).Msg("Failed to parse config.json for proxy settings")
+		return "", err
+	}
+
+	return strings.TrimSpace(config.Settings.ProxyURL), nil
+}
+
+// installDynamicProxyResolver resolves the outbound proxy from the configuration
+// on every request. net/http caches the proxy environment on first use, so
+// relying on HTTP_PROXY alone would keep a stale proxy - or keep bypassing one -
+// until the service restarted.
+func installDynamicProxyResolver() {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
 		return
 	}
 
-	proxyURL := strings.TrimSpace(config.Settings.ProxyURL)
+	transport.Proxy = func(*http.Request) (*url.URL, error) {
+		proxyURL, err := readConfiguredProxyURL()
+		if err != nil || proxyURL == "" {
+			return nil, nil
+		}
+
+		parsed, err := url.Parse(proxyURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return nil, nil
+		}
+
+		return parsed, nil
+	}
+}
+
+func configureOutboundProxy() {
+	// The environment variables are kept for any outbound call made outside the
+	// shared transport; the resolver below is what the App Store client uses.
+	installDynamicProxyResolver()
+
+	proxyEnvVars := []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"}
+	clearProxyEnv := func() {
+		for _, v := range proxyEnvVars {
+			os.Unsetenv(v)
+		}
+	}
+
+	proxyURL, err := readConfiguredProxyURL()
+	if err != nil {
+		clearProxyEnv()
+		return
+	}
+
 	if proxyURL == "" {
+		clearProxyEnv()
 		return
 	}
 
 	parsedURL, err := url.Parse(proxyURL)
 	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		logger.Warn().Str("config_path", configPath).Msg("Ignoring invalid outbound proxy URL in config")
+		clearProxyEnv()
+		logger.Warn().Str("config_path", filepath.Join(appServiceConfigDir, "config.json")).Msg("Ignoring invalid outbound proxy URL in config")
 		return
 	}
 
@@ -895,15 +992,31 @@ func handleInstallApp(c *gin.Context) {
 
 func handleSignIPA(c *gin.Context) {
 	var req struct {
-		IpaPath       string `json:"ipa_path" binding:"required"`
-		CertificateID string `json:"certificate_id" binding:"required"`
-		DeviceUDID    string `json:"device_udid"`
-		OutputDir     string `json:"output_dir"`
-		BundleID      string `json:"bundle_id"`
+		IpaPath       string                 `json:"ipa_path" binding:"required"`
+		CertificateID string                 `json:"certificate_id"`
+		DeviceUDID    string                 `json:"device_udid"`
+		OutputDir     string                 `json:"output_dir"`
+		BundleID      string                 `json:"bundle_id"`
+		SignMode      string                 `json:"sign_mode"`
+		EditorOptions *models.SigningOptions `json:"editor_options"`
+		IconPath      string                 `json:"icon_path"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "ipa_path and certificate_id are required"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "ipa_path is required"})
+		return
+	}
+
+	signMode := strings.ToLower(strings.TrimSpace(req.SignMode))
+	if signMode == "" {
+		signMode = "certificate"
+	}
+	if signMode != "certificate" && signMode != "adhoc" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "sign_mode must be certificate or adhoc"})
+		return
+	}
+	if signMode == "certificate" && strings.TrimSpace(req.CertificateID) == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "certificate_id is required for certificate signing"})
 		return
 	}
 
@@ -917,15 +1030,48 @@ func handleSignIPA(c *gin.Context) {
 		bundleIDForTask = "app"
 	}
 
-	taskID := fmt.Sprintf("sign_%s_%d", bundleIDForTask, time.Now().UnixNano())
+	taskPrefix := "sign"
+	if signMode == "adhoc" {
+		taskPrefix = "export"
+	}
+	taskID := fmt.Sprintf("%s_%s_%d", taskPrefix, bundleIDForTask, time.Now().UnixNano())
+	taskType := "sign"
+	if signMode == "adhoc" {
+		taskType = "export"
+	}
 
 	go func() {
-		signedIPAPath, effectiveBundleID, signErr := signStoredIPA(req.IpaPath, req.CertificateID, strings.TrimSpace(req.DeviceUDID), outputDir, strings.TrimSpace(req.BundleID), taskID)
+		var signedIPAPath string
+		var effectiveBundleID string
+		var signErr error
+
+		if signMode == "adhoc" {
+			signedIPAPath, effectiveBundleID, signErr = exportAdhocIPA(
+				req.IpaPath,
+				outputDir,
+				strings.TrimSpace(req.BundleID),
+				taskID,
+				req.EditorOptions,
+				strings.TrimSpace(req.IconPath),
+			)
+		} else {
+			signedIPAPath, effectiveBundleID, signErr = signStoredIPA(
+				req.IpaPath,
+				req.CertificateID,
+				strings.TrimSpace(req.DeviceUDID),
+				outputDir,
+				strings.TrimSpace(req.BundleID),
+				taskID,
+				req.EditorOptions,
+				strings.TrimSpace(req.IconPath),
+			)
+		}
+
 		if signErr != nil {
 			hub.Broadcast(models.TaskProgress{
 				Type:     "task_progress",
 				TaskID:   taskID,
-				TaskType: "sign",
+				TaskType: taskType,
 				Status:   "error",
 				Progress: 0,
 				Message:  signErr.Error(),
@@ -933,9 +1079,10 @@ func handleSignIPA(c *gin.Context) {
 					"file_path":      req.IpaPath,
 					"certificate_id": req.CertificateID,
 					"device_udid":    strings.TrimSpace(req.DeviceUDID),
+					"sign_mode":      signMode,
 				},
 			})
-			logger.Error().Err(signErr).Str("ipa_path", req.IpaPath).Str("task_id", taskID).Str("certificate_id", req.CertificateID).Msg("Failed to sign IPA")
+			logger.Error().Err(signErr).Str("ipa_path", req.IpaPath).Str("task_id", taskID).Str("sign_mode", signMode).Str("certificate_id", req.CertificateID).Msg("Failed to process IPA")
 			return
 		}
 
@@ -957,13 +1104,18 @@ func handleSignIPA(c *gin.Context) {
 			}
 		}
 
+		completedMessage := fmt.Sprintf("Signed IPA saved to %s", signedIPAPath)
+		if signMode == "adhoc" {
+			completedMessage = fmt.Sprintf("Edited IPA exported to %s", signedIPAPath)
+		}
+
 		hub.Broadcast(models.TaskProgress{
 			Type:     "task_progress",
 			TaskID:   taskID,
-			TaskType: "sign",
+			TaskType: taskType,
 			Status:   "completed",
 			Progress: 100,
-			Message:  fmt.Sprintf("Signed IPA saved to %s", signedIPAPath),
+			Message:  completedMessage,
 			Data: map[string]interface{}{
 				"file_path":      signedIPAPath,
 				"bundle_id":      effectiveBundleID,
@@ -971,13 +1123,14 @@ func handleSignIPA(c *gin.Context) {
 				"version":        version,
 				"certificate_id": req.CertificateID,
 				"device_udid":    strings.TrimSpace(req.DeviceUDID),
+				"sign_mode":      signMode,
 			},
 		})
 	}()
 
-	logger.Info().Str("ipa_path", req.IpaPath).Str("task_id", taskID).Str("certificate_id", req.CertificateID).Msg("IPA signing started")
+	logger.Info().Str("ipa_path", req.IpaPath).Str("task_id", taskID).Str("sign_mode", signMode).Str("certificate_id", req.CertificateID).Msg("IPA processing started")
 	c.JSON(http.StatusOK, models.SuccessResponse{
-		Message: "IPA signing started",
+		Message: "IPA processing started",
 		Data: map[string]interface{}{
 			"task_id": taskID,
 		},
@@ -1036,6 +1189,8 @@ func prepareSignedIPAForInstall(device ios.DeviceEntry, ipaPath string, bundleID
 			"file_path":      ipaPath,
 			"certificate_id": certificateID,
 		},
+		nil,
+		"",
 	)
 	if err != nil {
 		return "", "", func() {}, err
@@ -1044,7 +1199,7 @@ func prepareSignedIPAForInstall(device ios.DeviceEntry, ipaPath string, bundleID
 	return signedIPAPath, effectiveBundleID, cleanup, nil
 }
 
-func signStoredIPA(ipaPath string, certificateID string, deviceUDID string, outputDir string, bundleID string, taskID string) (string, string, error) {
+func signStoredIPA(ipaPath string, certificateID string, deviceUDID string, outputDir string, bundleID string, taskID string, editorOpts *models.SigningOptions, iconPath string) (string, string, error) {
 	effectiveBundleID := strings.TrimSpace(bundleID)
 	if effectiveBundleID == "" {
 		parsedIPA, err := ipaService.ParseIPA(ipaPath)
@@ -1123,7 +1278,7 @@ func signStoredIPA(ipaPath string, certificateID string, deviceUDID string, outp
 				return "", "", fmt.Errorf("session expired. Please log in again")
 			}
 
-			authResp, loginErr := storeService.LoginWithGSA(appleID, storedPassword, creds.AnisetteURL)
+			authResp, loginErr := storeService.LoginForSigning(appleID, storedPassword, creds.AnisetteURL)
 			if loginErr != nil || authResp == nil || !authResp.Success {
 				return "", "", fmt.Errorf("session expired and failed to refresh credentials")
 			}
@@ -1159,6 +1314,8 @@ func signStoredIPA(ipaPath string, certificateID string, deviceUDID string, outp
 			"certificate_id": certificateID,
 			"device_udid":    udid,
 		},
+		editorOpts,
+		iconPath,
 	)
 	if err != nil {
 		return "", "", err
@@ -1166,6 +1323,168 @@ func signStoredIPA(ipaPath string, certificateID string, deviceUDID string, outp
 	cleanup()
 
 	return signedIPAPath, effectiveBundleID, nil
+}
+
+func exportAdhocIPA(ipaPath string, outputDir string, bundleID string, taskID string, editorOpts *models.SigningOptions, iconPath string) (string, string, error) {
+	effectiveBundleID := strings.TrimSpace(bundleID)
+	if effectiveBundleID == "" {
+		parsedIPA, err := ipaService.ParseIPA(ipaPath)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to parse IPA bundle ID: %w", err)
+		}
+		effectiveBundleID = strings.TrimSpace(parsedIPA.BundleID)
+	}
+	if effectiveBundleID == "" {
+		return "", "", fmt.Errorf("bundle ID is required for export")
+	}
+
+	hub.Broadcast(models.TaskProgress{
+		Type:     "task_progress",
+		TaskID:   taskID,
+		TaskType: "export",
+		Status:   "started",
+		Progress: 0,
+		Message:  "Preparing edited IPA...",
+		Data: map[string]interface{}{
+			"file_path": ipaPath,
+			"bundle_id": effectiveBundleID,
+			"sign_mode": "adhoc",
+		},
+	})
+
+	outputPath, err := buildEditedOutputPath(outputDir, ipaPath)
+	if err != nil {
+		return "", "", err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return "", "", fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	hub.Broadcast(models.TaskProgress{
+		Type:     "task_progress",
+		TaskID:   taskID,
+		TaskType: "export",
+		Status:   "progress",
+		Progress: 20,
+		Message:  "Applying edits and Ad-Hoc signing...",
+		Data: map[string]interface{}{
+			"file_path": ipaPath,
+			"bundle_id": effectiveBundleID,
+			"sign_mode": "adhoc",
+		},
+	})
+
+	opts := sign.SignerOptions{
+		InputPath:  ipaPath,
+		OutputPath: outputPath,
+		Force:      true,
+	}
+	if editorOpts != nil {
+		applyEditorToSigner(&opts, editorOpts)
+	}
+	if strings.TrimSpace(iconPath) != "" {
+		opts.IconFile = strings.TrimSpace(iconPath)
+	}
+
+	if err := sign.SignIPA(opts); err != nil {
+		return "", "", fmt.Errorf("failed to export edited IPA: %w", err)
+	}
+
+	return outputPath, effectiveBundleID, nil
+}
+
+func buildEditedOutputPath(outputDir string, ipaPath string) (string, error) {
+	baseName := strings.TrimSuffix(filepath.Base(ipaPath), filepath.Ext(ipaPath))
+	// Avoid stacking suffixes when re-exporting an already edited file.
+	baseName = strings.TrimSuffix(baseName, "-edited")
+	baseName = strings.TrimSuffix(baseName, "_signed")
+	outputPath := filepath.Join(outputDir, baseName+"-edited.ipa")
+
+	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+		return outputPath, nil
+	}
+
+	for counter := 1; counter <= 1000; counter++ {
+		candidate := filepath.Join(outputDir, fmt.Sprintf("%s-edited(%d).ipa", baseName, counter))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		}
+	}
+
+	return "", fmt.Errorf("too many duplicate edited files")
+}
+
+// applyEditorToSigner copies the editor-generated SigningOptions onto the SignerOptions
+// struct that SignIPA actually consumes.
+func applyEditorToSigner(opts *sign.SignerOptions, e *models.SigningOptions) {
+	// Identity
+	if e.AppName != nil {
+		opts.NewBundleName = *e.AppName
+	}
+	if e.AppVersion != nil {
+		opts.NewBundleVersion = *e.AppVersion
+	}
+	if e.AppIdentifier != nil {
+		opts.NewBundleID = *e.AppIdentifier
+	}
+	if e.AppBuildVersion != nil {
+		opts.NewBuildVersion = *e.AppBuildVersion
+	}
+	if e.MinimumOSVersion != nil {
+		opts.MinimumOSVersion = *e.MinimumOSVersion
+	}
+	if e.Appearance != nil {
+		opts.Appearance = *e.Appearance
+	}
+
+	// Injection
+	if len(e.InjectionFiles) > 0 {
+		opts.DylibFiles = append([]string{}, e.InjectionFiles...)
+	}
+
+	// Common capabilities
+	opts.FileSharing = e.FileSharing
+	opts.ITunesFileSharing = e.ITunesFileSharing
+	opts.RemoveURLScheme = e.RemoveURLScheme
+	opts.RemoveProvisioning = e.RemoveProvisioning
+	opts.StatusBarHidden = e.StatusBarHidden
+	opts.ViewControllerBasedStatusBar = e.ViewControllerBasedStatusBar
+	opts.PrerenderedIcon = e.PrerenderedIcon
+	opts.RequiresPersistentWiFi = e.RequiresPersistentWiFi
+	opts.ExitsOnSuspend = e.ExitsOnSuspend
+	opts.AllowsArbitraryLoads = e.AllowsArbitraryLoads
+	opts.NoEncryptionDecl = e.NoEncryptionDecl
+
+	// Orientations
+	opts.OrientationPortrait = e.OrientationPortrait
+	opts.OrientationLandscapeLeft = e.OrientationLandscapeLeft
+	opts.OrientationLandscapeRight = e.OrientationLandscapeRight
+	opts.OrientationPortraitUpsideDown = e.OrientationPortraitUpsideDown
+
+	// Background modes
+	opts.BgAudio = e.BgAudio
+	opts.BgLocation = e.BgLocation
+	opts.BgFetch = e.BgFetch
+	opts.BgVoip = e.BgVoip
+
+	// Advanced
+	opts.RequiredDeviceCapabilities = e.RequiredDeviceCapabilities
+	opts.RemoveSupportedDevices = e.RemoveSupportedDevices
+	opts.BundleLocalizations = e.BundleLocalizations
+	opts.DevelopmentRegion = e.DevelopmentRegion
+	opts.ApplicationCategoryType = e.ApplicationCategoryType
+	opts.SupportsMultipleScenes = e.SupportsMultipleScenes
+	opts.CustomURLScheme = e.CustomURLScheme
+	opts.RemoveDocumentTypes = e.RemoveDocumentTypes
+	opts.RemoveExportedTypeDeclarations = e.RemoveExportedTypeDeclarations
+	opts.RemoveApplicationQueriesSchemes = e.RemoveApplicationQueriesSchemes
+	if e.PrivacyOverrides != nil {
+		opts.PrivacyOverrides = e.PrivacyOverrides
+	}
+	opts.RemoveLaunchScreen = e.RemoveLaunchScreen
+	opts.RemoveWatchApp = e.RemoveWatchApp
+	opts.RemovePlugIns = e.RemovePlugIns
 }
 
 func signIPAWithAssets(
@@ -1176,6 +1495,8 @@ func signIPAWithAssets(
 	taskID string,
 	taskType string,
 	taskData map[string]interface{},
+	editorOpts *models.SigningOptions,
+	iconPath string,
 ) (string, func(), error) {
 	hub.Broadcast(models.TaskProgress{
 		Type:     "task_progress",
@@ -1229,13 +1550,29 @@ func signIPAWithAssets(
 		return "", func() {}, fmt.Errorf("failed to write temp provisioning profile: %w", err)
 	}
 
-	profile, err := sign.ParseProvisioningProfileFromData(assets.ProvisionData)
+	_, err = sign.ParseProvisioningProfileFromData(assets.ProvisionData)
 	if err != nil {
 		cleanup()
 		return "", func() {}, fmt.Errorf("failed to parse generated provisioning profile: %w", err)
 	}
 
-	if err := sign.SignIPAWithP12(ipaPath, outputPath, p12Path, assets.P12Password, profile); err != nil {
+	// Build a full SignerOptions, applying editor overrides when present.
+	opts := sign.SignerOptions{
+		InputPath:     ipaPath,
+		OutputPath:    outputPath,
+		P12File:       p12Path,
+		P12Password:   assets.P12Password,
+		ProvisionFile: provisionPath,
+		Force:         true,
+	}
+	if editorOpts != nil {
+		applyEditorToSigner(&opts, editorOpts)
+	}
+	if strings.TrimSpace(iconPath) != "" {
+		opts.IconFile = strings.TrimSpace(iconPath)
+	}
+
+	if err := sign.SignIPA(opts); err != nil {
 		cleanup()
 		return "", func() {}, fmt.Errorf("failed to sign IPA: %w", err)
 	}
@@ -1523,7 +1860,7 @@ func handleGetCrashLogContent(c *gin.Context) {
 
 func handleGetFullDeviceInfo(c *gin.Context) {
 	udid := c.Param("udid")
-	logger.Info().Str("udid", udid).Msg("API: Collecting full device info")
+	complete := c.Query("full") == "1"
 
 	device, err := deviceService.GetDeviceByUDID(udid)
 	if err != nil {
@@ -1532,14 +1869,47 @@ func handleGetFullDeviceInfo(c *gin.Context) {
 		return
 	}
 
-	info, err := collectFullDeviceInfo(*device)
+	fullDeviceInfoCache.Lock()
+	if entry, ok := fullDeviceInfoCache.entries[udid]; ok &&
+		(!complete || entry.complete) && time.Now().Before(entry.expiresAt) {
+		fullDeviceInfoCache.Unlock()
+		logger.Debug().Str("udid", udid).Msg("API: Serving full device info from cache")
+		c.JSON(http.StatusOK, models.SuccessResponse{Message: "success", Data: entry.data})
+		return
+	}
+	fullDeviceInfoCache.Unlock()
+
+	logger.Info().Str("udid", udid).Bool("complete", complete).Msg("API: Collecting device info")
+
+	var info map[string]interface{}
+	if complete {
+		info, err = collectFullDeviceInfo(*device)
+	} else {
+		info, err = collectFastDeviceInfo(*device)
+	}
 	if err != nil {
 		logger.Error().Err(err).Str("udid", udid).Msg("Failed to collect full device info")
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: err.Error()})
 		return
 	}
 
+	fullDeviceInfoCache.Lock()
+	fullDeviceInfoCache.entries[udid] = fullDeviceInfoCacheEntry{
+		data:      info,
+		expiresAt: time.Now().Add(fullDeviceInfoCacheTTL),
+		complete:  complete,
+	}
+	fullDeviceInfoCache.Unlock()
+
 	c.JSON(http.StatusOK, models.SuccessResponse{Message: "success", Data: info})
+}
+
+func collectFastDeviceInfo(device ios.DeviceEntry) (map[string]interface{}, error) {
+	lockdownValues, err := ios.GetValuesPlist(device)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"lockdown:all": lockdownValues}, nil
 }
 
 func collectFullDeviceInfo(device ios.DeviceEntry) (map[string]interface{}, error) {
@@ -1598,6 +1968,54 @@ func collectFullDeviceInfo(device ios.DeviceEntry) (map[string]interface{}, erro
 		if err == nil && val != nil {
 			result["lockdown:domain:"+domain] = val
 		}
+	}
+
+	// Part 2b: root-domain GetValue for keys read directly from lockdownd
+	// (no Domain field in the GetValue request). These keys are not
+	// part of the GetAllValues response and are not served via MobileGestalt
+	// on recent iOS, but lockdownd answers them when requested explicitly.
+	rootKeys := []string{
+		"ActiveWirelessTechnology",
+		"DeviceEnclosureColor",
+		"RegulatoryModelNumber",
+		"PhoneNumber2",
+		"DeviceIsChaperoned",
+		"BasebandSerialNumber",
+		"MLBSerialNumber",
+		"UniqueChipID",
+		"HardwarePlatform",
+		"ProductionSOC",
+		"DeviceCoverGlassColor",
+		"DeviceHousingColor",
+		"DeviceBackingColor",
+		"FrontFacingIRCameraModuleSerialNumber",
+		"FrontFacingIRStructuredLightProjectorModuleSerialNumber",
+		"RosalineSerialNumber",
+		"AmbientLightSensorSerialNumber",
+		"CoverglassSerialNumber",
+		"ScreenSerialNumber",
+		"PanelSerialNumber",
+		"RawPanelSerialNumber",
+		"BatterySerialNumber",
+		"WifiChipset",
+		"WifiModuleSerial",
+	}
+	rootValues := make(map[string]interface{})
+	for _, key := range rootKeys {
+		val, err := lockdownConn.GetValueForDomain(key, "")
+		if err == nil && val != nil {
+			rootValues[key] = val
+		}
+	}
+	if len(rootValues) > 0 {
+		result["lockdown:root"] = rootValues
+	}
+
+	// Hardware details (mainboard, baseband, SIM, etc.) are derived from the
+	// full lockdown dump. Kept here — not in /devices — so the device list
+	// stays lightweight.
+	if hw := devicepkg.ExtractHardwareDetails(lockdownValues, lockdownConn); hw != nil {
+		result["hardware_details"] = hw
 	}
 
 	// Part 3: IORegistry entries (aligned with scripts/export-device-info.ps1)
@@ -1661,27 +2079,52 @@ func collectFullDeviceInfo(device ios.DeviceEntry) (map[string]interface{}, erro
 		"IOResources",
 	}
 
+	// IORegistry / MobileGestalt / Instruments queries are independent and each
+	// opens its own diagnostics_relay connection, so run them concurrently with
+	// bounded parallelism.
 	sensorSerials := make(map[string]interface{})
-	for _, entry := range entries {
-		val, err := queryIORegistryEntry(device, entry, "")
-		if err == nil && val != nil {
-			result["ioregentry:"+entry] = val
-			extractSensorSerials(val, sensorSerials)
-		}
+	cameraSerials := make(map[string]interface{})
+	var (
+		wg       sync.WaitGroup
+		resultMu sync.Mutex
+	)
+	const relayConcurrency = 8
+	sem := make(chan struct{}, relayConcurrency)
+	queue := func(fn func()) {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fn()
+		}()
 	}
 
-	// Part 4: full IORegistry tree — extract sensor/module serials that live in
-	// nodes not covered by the fixed entry list above (proximity, IR camera, etc.)
-	if fullReg, err := queryIORegistryEntry(device, "", ""); err == nil {
-		extractSensorSerials(fullReg, sensorSerials)
-	} else {
-		result["ioregistry:full_tree_status"] = map[string]interface{}{
-			"status": "error",
-			"error":  err.Error(),
-		}
+	for _, entry := range entries {
+		queue(func() {
+			val, err := queryIORegistryEntry(device, entry, "", 5*time.Second)
+			if err == nil && val != nil {
+				resultMu.Lock()
+				result["ioregentry:"+entry] = val
+				extractSensorSerials(val, sensorSerials)
+				resultMu.Unlock()
+			}
+		})
 	}
-	for k, v := range sensorSerials {
-		result["sensor:"+k] = v
+
+	// Part 4b: camera module serials read via diagnostics_relay IORegistry
+	// with EntryClass=AppleH16CamIn (EntryName returns nothing on recent
+	// iOS; the camera entries must be queried by class).
+	for _, entryClass := range []string{"AppleH16CamIn", "AppleH14CamIn"} {
+		queue(func() {
+			val, err := queryIORegistryClass(device, entryClass, 8*time.Second)
+			if err == nil && val != nil {
+				resultMu.Lock()
+				result["ioregistry:class:"+entryClass] = val
+				extractCameraSerials(val, cameraSerials)
+				resultMu.Unlock()
+			}
+		})
 	}
 
 	// Part 5: MobileGestalt exposes the active radio technology and component
@@ -1712,43 +2155,123 @@ func collectFullDeviceInfo(device ios.DeviceEntry) (map[string]interface{}, erro
 		"ScreenDimensions",
 		"OLEDDisplay",
 	}
-	if mobileGestalt, err := queryMobileGestalt(device, mobileGestaltKeys); err == nil && mobileGestalt != nil {
-		result["mobilegestalt"] = mobileGestalt
-	} else if err != nil {
-		result["mobilegestalt:status"] = map[string]interface{}{
-			"status": "error",
-			"error":  err.Error(),
+	queue(func() {
+		if mobileGestalt, err := queryMobileGestalt(device, mobileGestaltKeys); err == nil && mobileGestalt != nil {
+			resultMu.Lock()
+			result["mobilegestalt"] = mobileGestalt
+			resultMu.Unlock()
+		} else if err != nil {
+			resultMu.Lock()
+			result["mobilegestalt:status"] = map[string]interface{}{
+				"status": "error",
+				"error":  err.Error(),
+			}
+			resultMu.Unlock()
 		}
-	}
+	})
 
-	coreDevice := device
+	// Tunnel-based channels: RSD shim (iOS 17.4+ MobileGestalt) and CoreDevice.
+	// iOS obfuscates MobileGestalt keys: plain names map to
+	// base64(md5("MGCopyAnswer"+key)); recent iOS rejects the plain keys, so
+	// both channels are probed with the obfuscated form.
+	obfuscatedGestaltKeys := make([]string, 0, len(mobileGestaltKeys))
+	for _, k := range mobileGestaltKeys {
+		obfuscatedGestaltKeys = append(obfuscatedGestaltKeys, obfuscateGestaltKey(k))
+	}
 	coreDeviceStatus := map[string]interface{}{"status": "unavailable"}
-	if tunneledDevice, err := attachExistingTunnel(device); err == nil {
-		coreDevice = tunneledDevice
-		coreDeviceStatus["tunnel"] = "connected"
-	} else {
+	tunneledDevice, err := attachTunnel(device)
+	if err != nil {
 		coreDeviceStatus["tunnel"] = "unavailable"
 		coreDeviceStatus["tunnel_error"] = err.Error()
-	}
-	if mobileGestalt, err := queryCoreDeviceMobileGestalt(coreDevice, mobileGestaltKeys); err == nil && mobileGestalt != nil {
-		result["mobilegestalt:coredevice"] = mobileGestalt
-		coreDeviceStatus["status"] = "success"
-	} else if err != nil {
-		coreDeviceStatus["error"] = err.Error()
+	} else {
+		coreDeviceStatus["tunnel"] = "connected"
+		var tunnelWg sync.WaitGroup
+		var statusMu sync.Mutex
+		tunnelWg.Add(2)
+		go func() {
+			defer tunnelWg.Done()
+			mobileGestalt, err := queryMobileGestaltShim(tunneledDevice, obfuscatedGestaltKeys)
+			if err == nil && mobileGestalt != nil {
+				resultMu.Lock()
+				result["mobilegestalt:shim"] = mobileGestalt
+				resultMu.Unlock()
+				statusMu.Lock()
+				coreDeviceStatus["shim"] = "success"
+				statusMu.Unlock()
+			} else if err != nil {
+				statusMu.Lock()
+				coreDeviceStatus["shim_error"] = err.Error()
+				statusMu.Unlock()
+			}
+		}()
+		go func() {
+			defer tunnelWg.Done()
+			mobileGestalt, err := queryCoreDeviceMobileGestalt(tunneledDevice, obfuscatedGestaltKeys)
+			if err == nil && mobileGestalt != nil {
+				resultMu.Lock()
+				result["mobilegestalt:coredevice"] = mobileGestalt
+				resultMu.Unlock()
+				statusMu.Lock()
+				coreDeviceStatus["status"] = "success"
+				statusMu.Unlock()
+			} else if err != nil {
+				statusMu.Lock()
+				coreDeviceStatus["error"] = err.Error()
+				statusMu.Unlock()
+			}
+		}()
+		tunnelWg.Wait()
 	}
 	result["mobilegestalt:coredevice:status"] = coreDeviceStatus
 
-	if instrumentsService, err := instruments.NewDeviceInfoService(device); err == nil {
-		if hardwareInfo, err := instrumentsService.HardwareInformation(); err == nil {
-			result["instruments:hardwareInformation"] = hardwareInfo
-			for key, value := range hardwareInfo {
-				result["hardware:"+key] = value
+	queue(func() {
+		instrumentsService, err := instruments.NewDeviceInfoService(device)
+		if err != nil {
+			return
+		}
+		defer instrumentsService.Close()
+		hardwareInfo, err := instrumentsService.HardwareInformation()
+		if err != nil {
+			return
+		}
+		resultMu.Lock()
+		result["instruments:hardwareInformation"] = hardwareInfo
+		for key, value := range hardwareInfo {
+			result["hardware:"+key] = value
+		}
+		resultMu.Unlock()
+	})
+
+	wg.Wait()
+
+	// Part 4: full IORegistry tree — only fall back to the expensive full-tree
+	// dump when the fixed entry list above found no sensor/module serials.
+	if len(sensorSerials) == 0 {
+		if fullReg, err := queryIORegistryEntry(device, "", "", 15*time.Second); err == nil {
+			extractSensorSerials(fullReg, sensorSerials)
+		} else {
+			result["ioregistry:full_tree_status"] = map[string]interface{}{
+				"status": "error",
+				"error":  err.Error(),
 			}
 		}
-		instrumentsService.Close()
+	}
+	for k, v := range sensorSerials {
+		result["sensor:"+k] = v
+	}
+	for k, v := range cameraSerials {
+		result["camera:"+k] = v
 	}
 
 	return result, nil
+}
+
+// obfuscateGestaltKey computes the key form used by current iOS:
+// base64(md5("MGCopyAnswer"+key)) without padding.
+func obfuscateGestaltKey(key string) string {
+	plain := "MGCopyAnswer" + key
+	sum := md5.Sum([]byte(plain))
+	return base64.StdEncoding.EncodeToString(sum[:])[:22]
 }
 
 func queryMobileGestalt(device ios.DeviceEntry, keys []string) (map[string]interface{}, error) {
@@ -1775,6 +2298,43 @@ func queryMobileGestalt(device ios.DeviceEntry, keys []string) (map[string]inter
 	if err != nil {
 		return nil, err
 	}
+	return parseMobileGestaltResponse(responseBytes)
+}
+
+// queryMobileGestaltShim queries MobileGestalt over the RSD shim service,
+// which is the supported channel for iOS 17.4+ where the legacy lockdown
+// diagnostics_relay reports MobileGestalt as deprecated.
+func queryMobileGestaltShim(device ios.DeviceEntry, keys []string) (map[string]interface{}, error) {
+	deviceConn, err := ios.ConnectToShimService(device, "com.apple.mobile.diagnostics_relay.shim.remote")
+	if err != nil {
+		return nil, err
+	}
+	defer deviceConn.Close()
+
+	plistCodec := ios.NewPlistCodec()
+	request := map[string]interface{}{
+		"Request":           "MobileGestalt",
+		"MobileGestaltKeys": keys,
+	}
+	encoded, err := plistCodec.Encode(request)
+	if err != nil {
+		return nil, err
+	}
+	if err := deviceConn.Send(encoded); err != nil {
+		return nil, err
+	}
+
+	responseBytes, err := plistCodec.Decode(deviceConn.Reader())
+	if err != nil {
+		return nil, err
+	}
+	return parseMobileGestaltResponse(responseBytes)
+}
+
+// parseMobileGestaltResponse validates a diagnostics_relay MobileGestalt
+// response and returns the key/value mapping. A deprecated or failed inner
+// status is treated as an error so callers can fall back to other channels.
+func parseMobileGestaltResponse(responseBytes []byte) (map[string]interface{}, error) {
 	parsed, err := ios.ParsePlist(responseBytes)
 	if err != nil {
 		return nil, err
@@ -1790,6 +2350,12 @@ func queryMobileGestalt(device ios.DeviceEntry, keys []string) (map[string]inter
 	if !ok {
 		return nil, fmt.Errorf("MobileGestalt response has no MobileGestalt payload")
 	}
+	if status, ok := mobileGestalt["Status"].(string); ok {
+		if status != "Success" {
+			return nil, fmt.Errorf("MobileGestalt unavailable on this channel: %s", status)
+		}
+		delete(mobileGestalt, "Status")
+	}
 	return mobileGestalt, nil
 }
 
@@ -1800,6 +2366,83 @@ func queryCoreDeviceMobileGestalt(device ios.DeviceEntry, keys []string) (map[st
 	}
 	defer service.Close()
 	return service.QueryMobileGestalt(keys)
+}
+
+// initEmbeddedTunnel starts an in-process tunnel manager that maintains
+// userspace tunnels for connected iOS 17.4+ devices. It is used as a
+// fallback when no external `go-ios tunnel` agent is running.
+func initEmbeddedTunnel(configDir string) {
+	pairRecordsPath := filepath.Join(configDir, "remote-pairing")
+	if err := os.MkdirAll(pairRecordsPath, 0755); err != nil {
+		logger.Warn().Err(err).Msg("Failed to create embedded tunnel pair records dir")
+		return
+	}
+	pm, err := tunnel.NewPairRecordManager(pairRecordsPath)
+	if err != nil {
+		logger.Warn().Err(err).Msg("Failed to init embedded tunnel pair records")
+		return
+	}
+	// Userspace networking works without admin rights on all platforms.
+	embeddedTunnelMgr = tunnel.NewTunnelManager(pm, true)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := embeddedTunnelMgr.UpdateTunnels(context.Background()); err != nil {
+				logger.Debug().Err(err).Msg("Embedded tunnel update failed")
+			}
+		}
+	}()
+	logger.Info().Str("pair_records", pairRecordsPath).Msg("Embedded tunnel manager started")
+}
+
+// attachEmbeddedTunnel builds a tunneled DeviceEntry from the in-process
+// tunnel manager, mirroring the external agent flow in attachExistingTunnel.
+func attachEmbeddedTunnel(device ios.DeviceEntry) (ios.DeviceEntry, error) {
+	if embeddedTunnelMgr == nil {
+		return device, fmt.Errorf("embedded tunnel manager is not initialized")
+	}
+	// Tunnels are maintained by the background ticker in initEmbeddedTunnel;
+	// never start one on the request path. A freshly connected device may not
+	// have a tunnel yet — the caller falls back to no-tunnel channels.
+	t, err := embeddedTunnelMgr.FindTunnel(device.Properties.SerialNumber)
+	if err != nil {
+		return device, fmt.Errorf("embedded tunnel lookup failed: %w", err)
+	}
+	if t.Udid == "" {
+		return device, fmt.Errorf("embedded tunnel has no active tunnel for device")
+	}
+	return buildTunneledDevice(device, t.Address, t.RsdPort, t.UserspaceTUN, t.UserspaceTUNPort)
+}
+
+// buildTunneledDevice connects to an established tunnel, performs the RSD
+// handshake and returns a DeviceEntry that can reach RSD-based services.
+func buildTunneledDevice(device ios.DeviceEntry, address string, rsdPort int, userspaceTUN bool, userspaceTUNPort int) (ios.DeviceEntry, error) {
+	host := ios.HttpApiHost()
+
+	device.UserspaceTUN = userspaceTUN
+	device.UserspaceTUNHost = host
+	device.UserspaceTUNPort = userspaceTUNPort
+
+	rsdService, err := ios.NewWithAddrPortDevice(address, rsdPort, device)
+	if err != nil {
+		return device, err
+	}
+	defer rsdService.Close()
+
+	rsdProvider, err := rsdService.Handshake()
+	if err != nil {
+		return device, err
+	}
+
+	tunneledDevice, err := ios.GetDeviceWithAddress(device.Properties.SerialNumber, address, rsdProvider)
+	if err != nil {
+		return device, err
+	}
+	tunneledDevice.UserspaceTUN = userspaceTUN
+	tunneledDevice.UserspaceTUNHost = host
+	tunneledDevice.UserspaceTUNPort = userspaceTUNPort
+	return tunneledDevice, nil
 }
 
 func attachExistingTunnel(device ios.DeviceEntry) (ios.DeviceEntry, error) {
@@ -1839,32 +2482,23 @@ func attachExistingTunnel(device ios.DeviceEntry) (ios.DeviceEntry, error) {
 		return device, fmt.Errorf("go-ios tunnel returned incomplete device information")
 	}
 
-	device.UserspaceTUN = info.UserspaceTUN
-	device.UserspaceTUNHost = host
-	device.UserspaceTUNPort = info.UserspaceTUNPort
-
-	rsdService, err := ios.NewWithAddrPortDevice(info.Address, info.RsdPort, device)
-	if err != nil {
-		return device, err
-	}
-	defer rsdService.Close()
-
-	rsdProvider, err := rsdService.Handshake()
-	if err != nil {
-		return device, err
-	}
-
-	tunneledDevice, err := ios.GetDeviceWithAddress(device.Properties.SerialNumber, info.Address, rsdProvider)
-	if err != nil {
-		return device, err
-	}
-	tunneledDevice.UserspaceTUN = info.UserspaceTUN
-	tunneledDevice.UserspaceTUNHost = host
-	tunneledDevice.UserspaceTUNPort = info.UserspaceTUNPort
-	return tunneledDevice, nil
+	return buildTunneledDevice(device, info.Address, info.RsdPort, info.UserspaceTUN, info.UserspaceTUNPort)
 }
 
-func queryIORegistryEntry(device ios.DeviceEntry, entryName string, entryClass string) (map[string]interface{}, error) {
+// attachTunnel returns a tunneled DeviceEntry using the external go-ios agent
+// first and the embedded tunnel manager as a fallback.
+func attachTunnel(device ios.DeviceEntry) (ios.DeviceEntry, error) {
+	if tunneledDevice, err := attachExistingTunnel(device); err == nil {
+		return tunneledDevice, nil
+	}
+	if tunneledDevice, err := attachEmbeddedTunnel(device); err == nil {
+		logger.Info().Str("udid", device.Properties.SerialNumber).Msg("Using embedded tunnel for device")
+		return tunneledDevice, nil
+	}
+	return device, fmt.Errorf("no tunnel available for device")
+}
+
+func queryIORegistryEntry(device ios.DeviceEntry, entryName string, entryClass string, timeout time.Duration) (map[string]interface{}, error) {
 	deviceConn, err := ios.ConnectToService(device, "com.apple.mobile.diagnostics_relay")
 	if err != nil {
 		return nil, err
@@ -1888,10 +2522,27 @@ func queryIORegistryEntry(device ios.DeviceEntry, entryName string, entryClass s
 		return nil, err
 	}
 
-	respBytes, err := plistCodec.Decode(deviceConn.Reader())
-	if err != nil {
+	responseCh := make(chan []byte, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		respBytes, err := plistCodec.Decode(deviceConn.Reader())
+		if err != nil {
+			errCh <- err
+			return
+		}
+		responseCh <- respBytes
+	}()
+	var respBytes []byte
+	select {
+	case respBytes = <-responseCh:
+	case err := <-errCh:
 		return nil, err
+	case <-time.After(timeout):
+		// Closing the connection unblocks the pending read.
+		deviceConn.Close()
+		return nil, fmt.Errorf("IORegistry query for %q timed out after %s", entryName, timeout)
 	}
+
 	parsed, err := ios.ParsePlist(respBytes)
 	if err != nil {
 		return nil, err
@@ -1900,6 +2551,96 @@ func queryIORegistryEntry(device ios.DeviceEntry, entryName string, entryClass s
 		return diag, nil
 	}
 	return parsed, nil
+}
+
+// queryIORegistryClass sends an IORegistry request with only EntryClass set.
+// Camera entries must be queried this way; EntryName returns no data for
+// them on recent iOS versions.
+func queryIORegistryClass(device ios.DeviceEntry, entryClass string, timeout time.Duration) (map[string]interface{}, error) {
+	deviceConn, err := ios.ConnectToService(device, "com.apple.mobile.diagnostics_relay")
+	if err != nil {
+		return nil, err
+	}
+	defer deviceConn.Close()
+
+	plistCodec := ios.NewPlistCodec()
+	reqMap := map[string]string{"Request": "IORegistry", "EntryClass": entryClass}
+	encoded, err := plistCodec.Encode(reqMap)
+	if err != nil {
+		return nil, err
+	}
+	if err := deviceConn.Send(encoded); err != nil {
+		return nil, err
+	}
+
+	responseCh := make(chan []byte, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		respBytes, err := plistCodec.Decode(deviceConn.Reader())
+		if err != nil {
+			errCh <- err
+			return
+		}
+		responseCh <- respBytes
+	}()
+	var respBytes []byte
+	select {
+	case respBytes = <-responseCh:
+	case err := <-errCh:
+		return nil, err
+	case <-time.After(timeout):
+		deviceConn.Close()
+		return nil, fmt.Errorf("IORegistry EntryClass query for %q timed out after %s", entryClass, timeout)
+	}
+
+	parsed, err := ios.ParsePlist(respBytes)
+	if err != nil {
+		return nil, err
+	}
+	if diag, ok := parsed["Diagnostics"].(map[string]interface{}); ok {
+		return diag, nil
+	}
+	return parsed, nil
+}
+
+// cameraSerialKeys are the module identifiers exposed on AppleH*CamIn entries.
+var cameraSerialKeys = map[string]bool{
+	"FrontIRCameraModuleSerialNumString":             true,
+	"FrontIRStructuredLightProjectorSerialNumString": true,
+	"FrontCameraModuleSerialNumString":               true,
+	"BackCameraModuleSerialNumString":                true,
+	"BackSuperWideCameraModuleSerialNumString":       true,
+	"BackTeleCameraModuleSerialNumString":            true,
+	"BackSuperWideCameraSNUM":                        true,
+	"BackCameraSNUM":                                 true,
+	"JasperSNUM":                                     true,
+	"SavageSNUM":                                     true,
+	"YonkersSNUM":                                    true,
+}
+
+// extractCameraSerials walks a camera IORegistry entry and collects the
+// module serial number keys into out (keyed by the original key name).
+func extractCameraSerials(value interface{}, out map[string]interface{}) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for k, child := range v {
+			if cameraSerialKeys[k] {
+				out[k] = child
+			}
+			extractCameraSerials(child, out)
+		}
+	case map[interface{}]interface{}:
+		for k, child := range v {
+			if ks, ok := k.(string); ok && cameraSerialKeys[ks] {
+				out[ks] = child
+			}
+			extractCameraSerials(child, out)
+		}
+	case []interface{}:
+		for _, item := range v {
+			extractCameraSerials(item, out)
+		}
+	}
 }
 
 // isSensorSerialKey reports whether an IORegistry key looks like a hardware
@@ -1970,8 +2711,28 @@ func decodeHardwareValue(value interface{}) interface{} {
 	return value
 }
 
-func canonicalSensorKey(key string) string {
+func addSensorSerial(out map[string]interface{}, key string, value interface{}, parentKey string) {
+	decoded := decodeHardwareValue(value)
+	if decoded == nil {
+		return
+	}
+	if text, ok := decoded.(string); ok && strings.TrimSpace(text) == "" {
+		return
+	}
+	out[key] = decoded
+	if canonical := canonicalSensorKey(key, parentKey); canonical != "" {
+		if _, exists := out[canonical]; !exists {
+			out[canonical] = decoded
+		}
+	}
+}
+
+// canonicalSensorKey maps a raw IORegistry property to a stable sensor name.
+// The parentKey provides context for generic property names like "Serial",
+// which appear on many IORegistry nodes (Wi-Fi, battery, etc.).
+func canonicalSensorKey(key string, parentKey string) string {
 	normalized := normalizeHardwareKey(key)
+	parentNormalized := normalizeHardwareKey(parentKey)
 	switch {
 	case strings.Contains(normalized, "frontfacingircameramoduleserial"),
 		strings.Contains(normalized, "infraredcameramoduleserial"),
@@ -1995,49 +2756,40 @@ func canonicalSensorKey(key string) string {
 		strings.Contains(normalized, "screenserial"),
 		strings.Contains(normalized, "displayserial"):
 		return "screen"
+	case (normalized == "serial" || normalized == "serialnumber") &&
+		(strings.Contains(parentNormalized, "battery") || strings.Contains(parentNormalized, "applebattery")):
+		return "battery"
 	default:
 		return ""
-	}
-}
-
-func addSensorSerial(out map[string]interface{}, key string, value interface{}) {
-	decoded := decodeHardwareValue(value)
-	if decoded == nil {
-		return
-	}
-	if text, ok := decoded.(string); ok && strings.TrimSpace(text) == "" {
-		return
-	}
-	out[key] = decoded
-	if canonical := canonicalSensorKey(key); canonical != "" {
-		if _, exists := out[canonical]; !exists {
-			out[canonical] = decoded
-		}
 	}
 }
 
 // extractSensorSerials recursively walks an IORegistry tree (the full dump
 // returned without an EntryName) and collects string values of interest into out.
 func extractSensorSerials(value interface{}, out map[string]interface{}) {
+	extractSensorSerialsWithParent(value, out, "")
+}
+
+func extractSensorSerialsWithParent(value interface{}, out map[string]interface{}, parentKey string) {
 	switch v := value.(type) {
 	case map[string]interface{}:
 		for k, child := range v {
 			if isSensorSerialKey(k) {
-				addSensorSerial(out, k, child)
+				addSensorSerial(out, k, child, parentKey)
 			}
-			extractSensorSerials(child, out)
+			extractSensorSerialsWithParent(child, out, k)
 		}
 	case map[interface{}]interface{}:
 		for k, child := range v {
 			ks := fmt.Sprintf("%v", k)
 			if isSensorSerialKey(ks) {
-				addSensorSerial(out, ks, child)
+				addSensorSerial(out, ks, child, parentKey)
 			}
-			extractSensorSerials(child, out)
+			extractSensorSerialsWithParent(child, out, ks)
 		}
 	case []interface{}:
 		for _, item := range v {
-			extractSensorSerials(item, out)
+			extractSensorSerialsWithParent(item, out, parentKey)
 		}
 	}
 }
@@ -2232,6 +2984,7 @@ func handleLogin(c *gin.Context) {
 		Email       string `json:"email" binding:"required"`
 		Password    string `json:"password" binding:"required"`
 		AnisetteURL string `json:"anisette_url"`
+		ForSigning  bool   `json:"for_signing"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -2256,7 +3009,11 @@ func handleLogin(c *gin.Context) {
 	}
 
 	// Pass optional anisette override
-	result, err := storeService.LoginWithGSA(req.Email, req.Password, req.AnisetteURL)
+	login := storeService.LoginWithGSA
+	if req.ForSigning {
+		login = storeService.LoginForSigning
+	}
+	result, err := login(req.Email, req.Password, req.AnisetteURL)
 	if err != nil {
 		logger.Error().
 			Err(err).
@@ -2355,6 +3112,53 @@ func handleCheckAuth(c *gin.Context) {
 	c.JSON(http.StatusOK, models.SuccessResponse{
 		Message: "success",
 		Data:    map[string]bool{"authenticated": isAuth},
+	})
+}
+
+func handleGetLoginSessionState(c *gin.Context) {
+	email := strings.TrimSpace(c.Query("email"))
+	if email == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error: "email is required",
+		})
+		return
+	}
+
+	state, err := storeService.GetLoginSessionState(email)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error: err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse{
+		Message: "success",
+		Data:    state,
+	})
+}
+
+func handleClearLoginSession(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Error: "email is required",
+		})
+		return
+	}
+
+	if err := storeService.ClearStoredSession(req.Email); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error: err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse{
+		Message: "Saved sign-in data cleared",
 	})
 }
 
@@ -2569,6 +3373,7 @@ func handleGetAppVersions(c *gin.Context) {
 		})
 		return
 	}
+	forceRefresh := strings.EqualFold(c.Query("refresh"), "true")
 
 	// Create a task ID for tracking progress
 	taskID := fmt.Sprintf("version-history-%s-%d", bundleID, time.Now().UnixMilli())
@@ -2582,7 +3387,7 @@ func handleGetAppVersions(c *gin.Context) {
 	// Process in background with progress updates
 	go func() {
 		// Pass hub.Broadcast (method value) as the broadcast function
-		history, err := storeService.GetAppVersionHistoryWithProgress(bundleID, email, taskID, hub.Broadcast)
+		history, err := storeService.GetAppVersionHistoryWithProgress(bundleID, email, taskID, hub.Broadcast, forceRefresh)
 		if err != nil {
 			hub.Broadcast(models.TaskProgress{
 				Type:     "task_progress",
@@ -2637,13 +3442,45 @@ func handleGetVersionDetails(c *gin.Context) {
 	})
 }
 
+func setTaskState(progress models.TaskProgress) {
+	taskStatesMutex.Lock()
+	taskStates[progress.TaskID] = progress
+	taskStatesMutex.Unlock()
+	if progress.Status == "completed" || progress.Status == "error" || progress.Status == "cancelled" {
+		time.AfterFunc(10*time.Minute, func() {
+			taskStatesMutex.Lock()
+			delete(taskStates, progress.TaskID)
+			taskStatesMutex.Unlock()
+		})
+	}
+}
+
+func broadcastTaskProgress(progress models.TaskProgress) {
+	setTaskState(progress)
+	hub.Broadcast(progress)
+}
+
+func handleGetTaskStatus(c *gin.Context) {
+	taskID := c.Param("taskId")
+	taskStatesMutex.RLock()
+	progress, exists := taskStates[taskID]
+	taskStatesMutex.RUnlock()
+	if !exists {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Error: "task not found"})
+		return
+	}
+	c.JSON(http.StatusOK, models.SuccessResponse{Data: progress})
+}
+
 func handleDownloadApp(c *gin.Context) {
 	var req struct {
-		BundleID  string `json:"bundle_id" binding:"required"`
-		Email     string `json:"email" binding:"required"`
-		OutputDir string `json:"output_dir" binding:"required"`
-		AppName   string `json:"app_name"`
-		IconURL   string `json:"icon_url"`
+		BundleID          string `json:"bundle_id" binding:"required"`
+		Email             string `json:"email" binding:"required"`
+		OutputDir         string `json:"output_dir" binding:"required"`
+		AppName           string `json:"app_name"`
+		IconURL           string `json:"icon_url"`
+		ExternalVersionID string `json:"external_version_id"`
+		StoreItemID       int64  `json:"store_item_id"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -2673,7 +3510,7 @@ func handleDownloadApp(c *gin.Context) {
 	cancelTasksMutex.Unlock()
 
 	// Send initial task progress
-	hub.Broadcast(models.TaskProgress{
+	broadcastTaskProgress(models.TaskProgress{
 		Type:     "task_progress",
 		TaskID:   taskID,
 		TaskType: "download",
@@ -2696,8 +3533,10 @@ func handleDownloadApp(c *gin.Context) {
 			cancelTasksMutex.Unlock()
 		}()
 		progressChan := make(chan models.DownloadProgress, 10)
+		progressDone := make(chan struct{})
 
 		go func() {
+			defer close(progressDone)
 			for {
 				select {
 				case <-cancelChan:
@@ -2744,12 +3583,24 @@ func handleDownloadApp(c *gin.Context) {
 						"icon_url":  req.IconURL,
 					}
 
+					if req.ExternalVersionID != "" {
+						data["external_version_id"] = req.ExternalVersionID
+					}
+
 					if progress.FilePath != "" {
 						data["file_path"] = progress.FilePath
 					}
+					if progress.BytesDownloaded > 0 {
+						data["bytes_downloaded"] = progress.BytesDownloaded
+					}
+					if progress.TotalBytes > 0 {
+						data["total_bytes"] = progress.TotalBytes
+					}
+					if progress.SpeedBytesPerSecond > 0 {
+						data["speed_bytes_per_second"] = progress.SpeedBytesPerSecond
+					}
 
-					hub.Broadcast(models.TaskProgress{
-						Type:     "task_progress",
+					broadcastTaskProgress(models.TaskProgress{
 						TaskID:   taskID,
 						TaskType: "download",
 						Status:   progress.Status,
@@ -2761,8 +3612,15 @@ func handleDownloadApp(c *gin.Context) {
 			}
 		}()
 
-		err := storeService.Download(ctx, req.BundleID, req.Email, req.OutputDir, progressChan)
+		err := storeService.Download(ctx, store.DownloadOptions{
+			BundleID:          req.BundleID,
+			Email:             req.Email,
+			OutputDir:         req.OutputDir,
+			ExternalVersionID: req.ExternalVersionID,
+			StoreItemID:       req.StoreItemID,
+		}, progressChan)
 		close(progressChan)
+		<-progressDone
 
 		// Check if task was cancelled
 		cancelTasksMutex.Lock()
@@ -2781,10 +3639,12 @@ func handleDownloadApp(c *gin.Context) {
 		if err != nil {
 			logger.Error().Err(err).Str("bundle_id", req.BundleID).Msg("Download failed")
 
-			// Check if error is related to token expiration
-			isTokenError := strings.Contains(err.Error(), "password token") ||
-				strings.Contains(err.Error(), "token expired") ||
-				strings.Contains(err.Error(), "failed to refresh token")
+			errText := strings.ToLower(err.Error())
+			isAccountSessionError := strings.Contains(errText, "password token") ||
+				strings.Contains(errText, "token expired") ||
+				strings.Contains(errText, "failed to refresh token") ||
+				strings.Contains(errText, "missing required app store session data") ||
+				strings.Contains(errText, "missing app store session fields")
 
 			errorData := map[string]interface{}{
 				"bundle_id": req.BundleID,
@@ -2793,12 +3653,16 @@ func handleDownloadApp(c *gin.Context) {
 				"icon_url":  req.IconURL,
 			}
 
-			if isTokenError {
+			if isAccountSessionError {
 				errorData["account_expired"] = true
 				errorData["email"] = req.Email
 			}
 
-			hub.Broadcast(models.TaskProgress{
+			if errors.Is(err, store.ErrNotOwnedByAccount) {
+				errorData["not_owned"] = true
+			}
+
+			broadcastTaskProgress(models.TaskProgress{
 				Type:     "task_progress",
 				TaskID:   taskID,
 				TaskType: "download",
@@ -2809,7 +3673,7 @@ func handleDownloadApp(c *gin.Context) {
 			})
 		} else {
 			logger.Info().Str("bundle_id", req.BundleID).Msg("Download completed")
-			hub.Broadcast(models.TaskProgress{
+			broadcastTaskProgress(models.TaskProgress{
 				Type:     "task_progress",
 				TaskID:   taskID,
 				TaskType: "download",
@@ -2860,7 +3724,7 @@ func handleCancelTask(c *gin.Context) {
 		return
 	}
 
-	hub.Broadcast(models.TaskProgress{
+	broadcastTaskProgress(models.TaskProgress{
 		Type:     "task_progress",
 		TaskID:   taskID,
 		TaskType: "download",
@@ -2973,6 +3837,121 @@ func handleSetWiFiDebugging(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"enabled": *req.Enabled,
+	})
+}
+
+func handleParsePlist(c *gin.Context) {
+	var req struct {
+		Path       string `json:"path"`
+		DataBase64 string `json:"data_base64"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "invalid request body"})
+		return
+	}
+
+	path := strings.TrimSpace(req.Path)
+	dataBase64 := strings.TrimSpace(req.DataBase64)
+	if path == "" && dataBase64 == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "path or data_base64 is required"})
+		return
+	}
+
+	var (
+		result *plistutil.ParseResult
+		err    error
+	)
+	if path != "" {
+		result, err = plistService.ParseFile(path)
+	} else {
+		raw, decodeErr := base64.StdEncoding.DecodeString(dataBase64)
+		if decodeErr != nil {
+			c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "invalid data_base64"})
+			return
+		}
+		result, err = plistService.ParseBytes(raw)
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse{
+		Message: "Plist parsed successfully",
+		Data:    result,
+	})
+}
+
+func handleWritePlist(c *gin.Context) {
+	var req struct {
+		Path   string      `json:"path" binding:"required"`
+		Root   interface{} `json:"root" binding:"required"`
+		Format string      `json:"format"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "path and root are required"})
+		return
+	}
+
+	if err := plistService.WriteFile(plistutil.WriteRequest{
+		Path:   strings.TrimSpace(req.Path),
+		Root:   req.Root,
+		Format: strings.TrimSpace(req.Format),
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse{Message: "Plist written successfully"})
+}
+
+func handleRenderPlistXML(c *gin.Context) {
+	var req struct {
+		Root interface{} `json:"root" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "root is required"})
+		return
+	}
+
+	xmlPreview, err := plistService.RenderXML(req.Root)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse{
+		Message: "Plist XML rendered successfully",
+		Data: map[string]interface{}{
+			"xml_preview": xmlPreview,
+		},
+	})
+}
+
+func handleParsePlistXML(c *gin.Context) {
+	var req struct {
+		XML string `json:"xml" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "xml is required"})
+		return
+	}
+
+	xmlText := strings.TrimSpace(req.XML)
+	if xmlText == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "xml is required"})
+		return
+	}
+
+	result, err := plistService.ParseBytes([]byte(xmlText))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse{
+		Message: "Plist XML parsed successfully",
+		Data:    result,
 	})
 }
 
@@ -3243,7 +4222,7 @@ func handleImportFreeCert(c *gin.Context) {
 			Str("apple_id", req.AppleID).
 			Str("anisette_url_override", req.AnisetteURL).
 			Msg("Re-authenticating with stored password to get GSA credentials")
-		authResp, loginErr := storeService.LoginWithGSA(req.AppleID, storedPassword, req.AnisetteURL)
+		authResp, loginErr := storeService.LoginForSigning(req.AppleID, storedPassword, req.AnisetteURL)
 		if loginErr != nil {
 			logger.Error().Err(loginErr).Str("apple_id", req.AppleID).Msg("GSA re-authentication failed")
 			c.JSON(http.StatusBadRequest, models.ErrorResponse{
@@ -3252,7 +4231,11 @@ func handleImportFreeCert(c *gin.Context) {
 			return
 		}
 
-		if !authResp.Success {
+		if authResp != nil && authResp.Requires2FA {
+			c.JSON(http.StatusUnauthorized, models.ErrorResponse{Error: "Two-factor authentication is required for certificate generation. Sign in again to verify your Apple Account."})
+			return
+		}
+		if authResp == nil || !authResp.Success {
 			logger.Error().Str("apple_id", req.AppleID).Msg("GSA re-authentication was not successful")
 			c.JSON(http.StatusBadRequest, models.ErrorResponse{
 				Error: "Failed to authenticate with Apple. Please log out and log in again",
@@ -3290,8 +4273,8 @@ func handleImportFreeCert(c *gin.Context) {
 			}
 
 			logger.Info().Str("apple_id", req.AppleID).Msg("Re-authenticating to get fresh credentials with AnisetteData")
-			authResp, loginErr := storeService.LoginWithGSA(req.AppleID, storedPassword, req.AnisetteURL)
-			if loginErr != nil || !authResp.Success {
+			authResp, loginErr := storeService.LoginForSigning(req.AppleID, storedPassword, req.AnisetteURL)
+			if loginErr != nil || authResp == nil || !authResp.Success {
 				logger.Error().Err(loginErr).Str("apple_id", req.AppleID).Msg("Re-authentication failed")
 				c.JSON(http.StatusBadRequest, models.ErrorResponse{
 					Error: "Failed to refresh credentials. Please log out and log in again",
@@ -3406,7 +4389,7 @@ func handleImportFreeCert(c *gin.Context) {
 				Str("apple_id", req.AppleID).
 				Str("anisette_url_override", req.AnisetteURL).
 				Msg("Password retrieved, starting GSA re-authentication after session expiry")
-			authResp, loginErr := storeService.LoginWithGSA(req.AppleID, storedPassword, req.AnisetteURL)
+			authResp, loginErr := storeService.LoginForSigning(req.AppleID, storedPassword, req.AnisetteURL)
 			if loginErr != nil {
 				logger.Error().Err(loginErr).Str("apple_id", req.AppleID).Msg("GSA re-authentication failed")
 				var gsaErr *store.GSAError
@@ -3422,7 +4405,11 @@ func handleImportFreeCert(c *gin.Context) {
 				return
 			}
 
-			if !authResp.Success {
+			if authResp != nil && authResp.Requires2FA {
+				c.JSON(http.StatusUnauthorized, models.ErrorResponse{Error: "Two-factor authentication is required for certificate generation. Sign in again to verify your Apple Account."})
+				return
+			}
+			if authResp == nil || !authResp.Success {
 				logger.Error().Str("apple_id", req.AppleID).Msg("GSA re-authentication was not successful")
 				c.JSON(http.StatusBadRequest, models.ErrorResponse{
 					Error: "Session expired and re-authentication failed. Please log out and log in again",

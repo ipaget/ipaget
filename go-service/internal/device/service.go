@@ -26,7 +26,16 @@ type Service struct {
 	listeners []chan models.DeviceEvent
 	Simulated map[string]models.SimulatedDevice
 	ConfigDir string
+
+	// listCache holds the assembled /devices response so list refreshes stay
+	// fast; it is invalidated whenever the connected device set changes.
+	listCacheMu   sync.Mutex
+	listCache     []models.DeviceInfo
+	listCacheTime time.Time
 }
+
+// deviceListCacheTTL bounds how stale the /devices response may be.
+const deviceListCacheTTL = 5 * time.Second
 
 func NewService(configDir string) *Service {
 	return &Service{
@@ -140,6 +149,11 @@ func normalizeConnectionType(connectionType string) string {
 	}
 }
 
+// isUSBConnection reports whether the usbmux connection type is a cable link.
+func isUSBConnection(connectionType string) bool {
+	return strings.EqualFold(strings.TrimSpace(connectionType), "USB")
+}
+
 func (s *Service) refreshDeviceCache() {
 	list, err := ios.ListDevices()
 	if err != nil {
@@ -184,6 +198,17 @@ func (s *Service) refreshDeviceCacheLockedFromList(list ios.DeviceList) map[stri
 			continue
 		}
 
+		// The same UDID can appear twice (USB + Network) when the device is
+		// both cable-attached and WiFi-paired. Keep only one entry and prefer
+		// the USB connection so the UI switches back automatically.
+		if existing, ok := next[udid]; ok {
+			if isUSBConnection(device.Properties.ConnectionType) && !isUSBConnection(existing.Properties.ConnectionType) {
+				deviceCopy := device
+				next[udid] = &deviceCopy
+			}
+			continue
+		}
+
 		// Store a copy so later list mutations do not affect the cache.
 		deviceCopy := device
 		next[udid] = &deviceCopy
@@ -197,6 +222,19 @@ func (s *Service) refreshDeviceCacheLockedFromList(list ios.DeviceList) map[stri
 		if _, stillConnected := next[udid]; !stillConnected {
 			logger.Info().Str("udid", udid).Msg("Removing disconnected device from cache")
 		}
+	}
+
+	setChanged := len(previous) != len(next)
+	if !setChanged {
+		for udid := range next {
+			if _, ok := previous[udid]; !ok {
+				setChanged = true
+				break
+			}
+		}
+	}
+	if setChanged {
+		s.invalidateListCacheLocked()
 	}
 
 	s.devices = next
@@ -231,367 +269,365 @@ func (s *Service) ListAllConnectedDeviceUDIDs() []string {
 func (s *Service) ListDevices() ([]models.DeviceInfo, error) {
 	s.refreshDeviceCache()
 
+	s.listCacheMu.Lock()
+	if s.listCache != nil && time.Since(s.listCacheTime) < deviceListCacheTTL {
+		cached := s.listCache
+		s.listCacheMu.Unlock()
+		return cached, nil
+	}
+	s.listCacheMu.Unlock()
+
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]models.DeviceInfo, 0, len(s.devices)+len(s.Simulated))
-	for _, device := range s.devices {
-		// Get device info
-		allValues, err := ios.GetValues(*device)
-		if err != nil {
-			// Skip devices that can't provide info (unpaired, locked, etc.)
-			logger.Debug().Err(err).Str("udid", device.Properties.SerialNumber).Msg("Failed to get device values, skipping")
-			continue
-		}
-
-		// Extract basic info
-		productType := allValues.Value.ProductType
-		version := allValues.Value.ProductVersion
-		name := allValues.Value.DeviceName
-		model := productType
-
-		// Use the correct UDID, Serial Number, and ECID fields
-		udid := getStringValue(allValues.Value.UniqueDeviceID)
-		serialNumber := getStringValue(allValues.Value.SerialNumber)
-
-		// ECID: Extract last 16 characters from UDID (e.g., 00008110-001410523650401E -> 001410523650401E)
-		ecid := ""
-		if len(udid) >= 16 {
-			ecid = udid[len(udid)-16:]
-		}
-
-		// IMEI: Get from InternationalMobileEquipmentIdentity
-		imei := getStringValue(allValues.Value.InternationalMobileEquipmentIdentity)
-		imei2 := ""
-
-		// Extract hardware model (e.g., A2634 or D17AP)
-		hardwareModel := getStringValue(allValues.Value.HardwareModel)
-		regulatoryModel := ""
-
-		// Extract additional info with safe type assertions
-		color := getStringValue(allValues.Value.DeviceColor)
-		enclosureColor := getStringValue(allValues.Value.DeviceEnclosureColor)
-		buildVersion := getStringValue(allValues.Value.BuildVersion)
-		firmwareVersion := getStringValue(allValues.Value.FirmwareVersion)
-		regionInfo := getStringValue(allValues.Value.RegionInfo)
-		modelNumber := getStringValue(allValues.Value.ModelNumber)
-		timeZone := getStringValue(allValues.Value.TimeZone)
-		ethernetAddress := getStringValue(allValues.Value.EthernetAddress)
-
-		// Sales Model: Combine ModelNumber and RegionInfo (e.g., MLE03 CH/A)
-		salesModel := ""
-		if modelNumber != "" {
-			if regionInfo != "" {
-				salesModel = modelNumber + " " + regionInfo
-			} else {
-				salesModel = modelNumber
-			}
-		}
-
-		// Extract activation state
-		activationState := getStringValue(allValues.Value.ActivationState)
-		if activationState == "" {
-			activationState = "Unknown"
-		}
-
-		// CPU Architecture
-		cpuArch := getStringValue(allValues.Value.CPUArchitecture)
-
-		// WiFi and Bluetooth addresses
-		wifiAddr := getStringValue(allValues.Value.WiFiAddress)
-		btAddr := getStringValue(allValues.Value.BluetoothAddress)
-
-		// Get additional fields via lockdown connection
-		phoneNumber := ""
-		humanReadableVersion := ""
-		locale := ""
-		icloudEnabled := false
-		appleIDLocked := false
-		imsi := ""
-		simStatus := ""
-		simTrayStatus := ""
-		sim1Info := ""
-		sim2Info := ""
-		batteryLevel := 0
-		batteryHealth := 0
-		batteryCycleCount := 0
-		batteryWatts := 0.0
-		batteryIsCharging := false
-		batteryExternalConnected := false
-		batteryFullyCharged := false
-		wifiDebuggingEnabled := false
-
-		var storageInfo *models.StorageInfo
-		lockdownConn, err := ios.ConnectLockdownWithSession(*device)
-		if err == nil {
-			if val, err := lockdownConn.GetValueForDomain("EnableWifiDebugging", "com.apple.mobile.wireless_lockdown"); err == nil {
-				wifiDebuggingEnabled, _ = val.(bool)
-			}
-			// Try to get PhoneNumber
-			if val, err := lockdownConn.GetValueForDomain("PhoneNumber", ""); err == nil {
-				phoneNumber = getStringValue(val)
-			}
-			// Try to get HumanReadableProductVersionString (prefer this over ProductVersion)
-			if val, err := lockdownConn.GetValueForDomain("HumanReadableProductVersionString", ""); err == nil {
-				humanReadableVersion = getStringValue(val)
-			}
-			if val, err := lockdownConn.GetValueForDomain("Locale", "com.apple.international"); err == nil {
-				locale = getStringValue(val)
-			}
-			// Try to get RegulatoryModelNumber (e.g. A2634)
-			if val, err := lockdownConn.GetValueForDomain("RegulatoryModelNumber", ""); err == nil {
-				regulatoryModel = getStringValue(val)
-			}
-			// Try to get IMEI2
-			if val, err := lockdownConn.GetValueForDomain("InternationalMobileEquipmentIdentity2", ""); err == nil {
-				imei2 = getStringValue(val)
-			}
-			// Try to get IMSI
-			if val, err := lockdownConn.GetValueForDomain("InternationalMobileSubscriberIdentity", ""); err == nil {
-				imsi = getStringValue(val)
-			}
-			// Try to get EthernetAddress if missing
-			if ethernetAddress == "" {
-				if val, err := lockdownConn.GetValueForDomain("EthernetAddress", ""); err == nil {
-					ethernetAddress = getStringValue(val)
-				}
-			}
-			// Try to get SIM info (carrier info, sim status, etc)
-			// Note: These might be in com.apple.commcenter or other domains
-			if val, err := lockdownConn.GetValueForDomain("SIMStatus", ""); err == nil {
-				simStatus = getStringValue(val)
-			}
-			if val, err := lockdownConn.GetValueForDomain("SIMTrayStatus", ""); err == nil {
-				simTrayStatus = getStringValue(val)
-			}
-			// Extract carrier info from CarrierBundleInfoArray (it's an array of SIM info)
-			if val, err := lockdownConn.GetValueForDomain("CarrierBundleInfoArray", ""); err == nil {
-				if carrierArray, ok := val.([]interface{}); ok {
-					logger.Info().Msgf("Found CarrierBundleInfoArray with %d items", len(carrierArray))
-					for idx, item := range carrierArray {
-						if carrierDict, ok := item.(map[string]interface{}); ok {
-							slot := getStringValue(carrierDict["Slot"])
-							bundleID := getStringValue(carrierDict["CFBundleIdentifier"])
-							logger.Info().Msgf("CarrierBundleInfo[%d]: Slot=%s, BundleID=%s", idx, slot, bundleID)
-
-							// Extract carrier name from bundle ID (e.g., "com.apple.ChinaTelecom_USIM_cn" -> "ChinaTelecom_USIM_cn")
-							carrierName := bundleID
-							if len(bundleID) > 0 {
-								// Remove "com.apple." prefix only
-								if idx := strings.Index(bundleID, "com.apple."); idx == 0 {
-									carrierName = bundleID[10:]
-								}
-							}
-							// Assign to sim1Info or sim2Info based on Slot
-							if slot == "kOne" {
-								sim1Info = carrierName
-								logger.Info().Msgf("Set SIM1Info: %s", sim1Info)
-								// Also get IMSI for slot 1 if available
-								if imsiVal := getStringValue(carrierDict["InternationalMobileSubscriberIdentity"]); imsiVal != "" {
-									imsi = imsiVal
-								}
-							} else if slot == "kTwo" {
-								sim2Info = carrierName
-								logger.Info().Msgf("Set SIM2Info: %s", sim2Info)
-							}
-						}
-					}
-				} else {
-					logger.Warn().Msg("CarrierBundleInfoArray is not an array")
-				}
-			} else {
-				logger.Warn().Msgf("Failed to get CarrierBundleInfoArray: %v", err)
-			}
-
-			// Determine iCloud login status (best-effort)
-			// Prefer com.apple.mobile.data_sync: AccountNames often contains iCloud and/or iCloud email addresses.
-			if val, err := lockdownConn.GetValueForDomain("", "com.apple.mobile.data_sync"); err == nil && val != nil {
-				icloudEnabled = isICloudAccountPresent(val)
-			}
-
-			// Fallback iCloud signals via iTunes store domains (some systems expose AppleID/DSID there)
-			if !icloudEnabled {
-				for _, domain := range []string{"com.apple.mobile.iTunes.store", "com.apple.mobile.iTunes", "com.apple.itunesstored"} {
-					if v, err := lockdownConn.GetValueForDomain("AppleID", domain); err == nil {
-						if s := strings.TrimSpace(getStringValue(v)); s != "" {
-							icloudEnabled = true
-							break
-						}
-					}
-
-					if v, err := lockdownConn.GetValueForDomain("DSPersonID", domain); err == nil {
-						s := strings.TrimSpace(getStringValue(v))
-						if s != "" && s != "0" {
-							icloudEnabled = true
-							break
-						}
-					}
-
-					if v, err := lockdownConn.GetValueForDomain("AccountID", domain); err == nil {
-						s := strings.TrimSpace(getStringValue(v))
-						if s != "" && s != "0" {
-							icloudEnabled = true
-							break
-						}
-					}
-				}
-			}
-
-			// Determine Find My status / Activation Lock state
-			// Prefer NVRAM exports: NonVolatileRAM has keys like fm-spstatus and fm-activation-locked.
-			// Keep the existing field name apple_id_locked for UI compatibility.
-			appleIDLocked = isFindMyEnabledFromAllValues(allValues.Value)
-			if !appleIDLocked {
-				// Fallback: old lockdown domain (may not exist on newer systems)
-				if fmipVal, err := lockdownConn.GetValueForDomain("FMIPEnabled", "com.apple.fmip"); err == nil {
-					if enabled, ok := fmipVal.(bool); ok && enabled {
-						appleIDLocked = true
-					}
-				}
-			}
-
-			// Get storage information
-			if diskUsage, err := lockdownConn.GetValueForDomain("", "com.apple.disk_usage"); err == nil {
-				diskUsageFactory, _ := lockdownConn.GetValueForDomain("", "com.apple.disk_usage.factory")
-				storageInfo = parseStorageInfo(diskUsage, diskUsageFactory)
-			}
-		}
-
-		battery := collectBatteryMetrics(*device)
-		if battery.level > 0 {
-			batteryLevel = battery.level
-		}
-		batteryHealth = battery.health
-		batteryCycleCount = battery.cycleCount
-		batteryWatts = battery.watts
-		batteryIsCharging = battery.isCharging
-		batteryExternalConnected = battery.externalConnected
-		batteryFullyCharged = battery.fullyCharged
-
-		// Use HumanReadableProductVersionString if available
-		if humanReadableVersion != "" {
-			version = humanReadableVersion
-		}
-
-		// Use RegulatoryModelNumber as ProductName if available (e.g. A2634)
-		// Otherwise fallback to HardwareModel (e.g. D17AP)
-		productName := hardwareModel
-		if regulatoryModel != "" {
-			productName = regulatoryModel
-		}
-
-		rawData := make(map[string]interface{})
-		if values, err := ios.GetValuesPlist(*device); err == nil && len(values) > 0 {
-			rawData = values
-		} else if jsonBytes, err := json.Marshal(allValues.Value); err == nil {
-			json.Unmarshal(jsonBytes, &rawData)
-		}
-		if humanReadableVersion != "" {
-			rawData["HumanReadableProductVersionString"] = humanReadableVersion
-		}
-		if locale != "" {
-			rawData["Locale"] = locale
-		}
-		if regulatoryModel != "" {
-			rawData["RegulatoryModelNumber"] = regulatoryModel
-		}
-		if imei2 != "" {
-			rawData["InternationalMobileEquipmentIdentity2"] = imei2
-		}
-		if imsi != "" {
-			rawData["InternationalMobileSubscriberIdentity"] = imsi
-		}
-		if phoneNumber != "" {
-			rawData["PhoneNumber"] = phoneNumber
-		}
-		if simStatus != "" {
-			rawData["SIMStatus"] = simStatus
-		}
-		if simTrayStatus != "" {
-			rawData["SIMTrayStatus"] = simTrayStatus
-		}
-		// Extract detailed hardware information
-		hardwareDetails := extractHardwareDetails(rawData, lockdownConn, device)
-		if lockdownConn != nil {
-			lockdownConn.Close()
-		}
-		for _, key := range []string{"BasebandRegionSKU", "BasebandSerialNumber", "ChipSerialNo", "PkHash", "SoftwareBehavior", "ProximitySensorCalibration"} {
-			if value, ok := rawData[key]; ok {
-				rawData[key] = formatBinaryIdentifier(value)
-			}
-		}
-
-		// Add hardware_details to raw_data for display in raw data tab
-		if hardwareDetails != nil {
-			if hwBytes, err := json.Marshal(hardwareDetails); err == nil {
-				var hwMap map[string]interface{}
-				json.Unmarshal(hwBytes, &hwMap)
-				rawData["hardware_details"] = hwMap
-			}
-		}
-
-		deviceInfo := models.DeviceInfo{
-			UDID:                 udid,
-			Name:                 name,
-			Model:                model,
-			Version:              version,
-			Color:                color,
-			EnclosureColor:       enclosureColor,
-			ProductType:          productType,
-			ProductName:          productName,
-			RegulatoryModel:      regulatoryModel,
-			BuildVersion:         buildVersion,
-			FirmwareVersion:      firmwareVersion,
-			SerialNumber:         serialNumber,
-			IMEI:                 imei,
-			IMEI2:                imei2,
-			PhoneNumber:          phoneNumber,
-			ECID:                 ecid,
-			RegionInfo:           regionInfo,
-			ModelNumber:          modelNumber,
-			SalesModel:           salesModel,
-			TimeZone:             timeZone,
-			ActivationState:      activationState,
-			IsPaired:             true,
-			ConnectionType:       normalizeConnectionType(device.Properties.ConnectionType),
-			WiFiDebuggingEnabled: wifiDebuggingEnabled,
-			CPUArchitecture:      cpuArch,
-			WiFiAddress:          wifiAddr,
-			EthernetAddress:      ethernetAddress,
-			BluetoothAddress:     btAddr,
-			ICloudEnabled:        icloudEnabled,
-			AppleIDLocked:        appleIDLocked,
-			IMSI:                 imsi,
-			SIMStatus:            simStatus,
-			SIMTrayStatus:        simTrayStatus,
-			SIM1Info:             sim1Info,
-			SIM2Info:             sim2Info,
-			StorageInfo:          storageInfo,
-			HardwareDetails:      hardwareDetails,
-			RawData:              rawData,
-			// Note: Battery info, jailbreak detection, and warranty info
-			// require additional API calls or cannot be reliably detected
-			IsJailbroken:             false, // Placeholder
-			BatteryLevel:             batteryLevel,
-			BatteryIsCharging:        batteryIsCharging,
-			BatteryExternalConnected: batteryExternalConnected,
-			BatteryFullyCharged:      batteryFullyCharged,
-			BatteryHealth:            batteryHealth,
-			BatteryCycleCount:        batteryCycleCount,
-			BatteryWatts:             batteryWatts,
-			CrashLogCount:            0, // Requires CrashReportMover service
-		}
-
-		result = append(result, deviceInfo)
+	devices := make([]*ios.DeviceEntry, 0, len(s.devices))
+	for _, d := range s.devices {
+		devices = append(devices, d)
 	}
-
-	// Append simulated devices (already in DeviceInfo format)
+	simulated := make([]models.DeviceInfo, 0, len(s.Simulated))
 	for _, sim := range s.Simulated {
-		result = append(result, sim.Info)
+		simulated = append(simulated, sim.Info)
 	}
+	s.mu.RUnlock()
+
+	result := make([]models.DeviceInfo, 0, len(devices)+len(simulated))
+	const deviceConcurrency = 4
+	sem := make(chan struct{}, deviceConcurrency)
+	var wg sync.WaitGroup
+	var resultMu sync.Mutex
+	for _, d := range devices {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(d *ios.DeviceEntry) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			info, ok := collectDeviceInfo(d)
+			if !ok {
+				return
+			}
+			resultMu.Lock()
+			result = append(result, info)
+			resultMu.Unlock()
+		}(d)
+	}
+	wg.Wait()
+
+	result = append(result, simulated...)
+
+	s.listCacheMu.Lock()
+	s.listCache = result
+	s.listCacheTime = time.Now()
+	s.listCacheMu.Unlock()
 
 	logger.Info().Int("total_devices", len(result)).Msg("Device list completed")
 	return result, nil
+}
+
+// collectDeviceInfo gathers the lightweight detail fields for one device.
+// Full-dump collection (raw plist, hardware details) lives in the
+// /device/:udid/device-info endpoint instead, keeping list refreshes fast.
+func collectDeviceInfo(device *ios.DeviceEntry) (models.DeviceInfo, bool) {
+	allValues, err := ios.GetValues(*device)
+	if err != nil {
+		// Skip devices that can't provide info (unpaired, locked, etc.)
+		logger.Debug().Err(err).Str("udid", device.Properties.SerialNumber).Msg("Failed to get device values, skipping")
+		return models.DeviceInfo{}, false
+	}
+
+	// Extract basic info
+	productType := allValues.Value.ProductType
+	version := allValues.Value.ProductVersion
+	name := allValues.Value.DeviceName
+	model := productType
+
+	// Use the correct UDID, Serial Number, and ECID fields
+	udid := getStringValue(allValues.Value.UniqueDeviceID)
+	serialNumber := getStringValue(allValues.Value.SerialNumber)
+
+	// ECID: Extract last 16 characters from UDID (e.g., 00008110-001410523650401E -> 001410523650401E)
+	ecid := ""
+	if len(udid) >= 16 {
+		ecid = udid[len(udid)-16:]
+	}
+
+	// IMEI: Get from InternationalMobileEquipmentIdentity
+	imei := getStringValue(allValues.Value.InternationalMobileEquipmentIdentity)
+	imei2 := ""
+
+	// Extract hardware model (e.g., A2634 or D17AP)
+	hardwareModel := getStringValue(allValues.Value.HardwareModel)
+	regulatoryModel := ""
+
+	// Extract additional info with safe type assertions
+	color := getStringValue(allValues.Value.DeviceColor)
+	enclosureColor := getStringValue(allValues.Value.DeviceEnclosureColor)
+	buildVersion := getStringValue(allValues.Value.BuildVersion)
+	firmwareVersion := getStringValue(allValues.Value.FirmwareVersion)
+	regionInfo := getStringValue(allValues.Value.RegionInfo)
+	modelNumber := getStringValue(allValues.Value.ModelNumber)
+	timeZone := getStringValue(allValues.Value.TimeZone)
+	ethernetAddress := getStringValue(allValues.Value.EthernetAddress)
+
+	// Sales Model: Combine ModelNumber and RegionInfo (e.g., MLE03 CH/A)
+	salesModel := ""
+	if modelNumber != "" {
+		if regionInfo != "" {
+			salesModel = modelNumber + " " + regionInfo
+		} else {
+			salesModel = modelNumber
+		}
+	}
+
+	// Extract activation state
+	activationState := getStringValue(allValues.Value.ActivationState)
+	if activationState == "" {
+		activationState = "Unknown"
+	}
+
+	// CPU Architecture
+	cpuArch := getStringValue(allValues.Value.CPUArchitecture)
+
+	// WiFi and Bluetooth addresses
+	wifiAddr := getStringValue(allValues.Value.WiFiAddress)
+	btAddr := getStringValue(allValues.Value.BluetoothAddress)
+
+	// Get additional fields via lockdown connection
+	phoneNumber := ""
+	humanReadableVersion := ""
+	icloudEnabled := false
+	appleIDLocked := false
+	imsi := ""
+	simStatus := ""
+	simTrayStatus := ""
+	sim1Info := ""
+	sim2Info := ""
+	batteryLevel := 0
+	batteryHealth := 0
+	batteryCycleCount := 0
+	batteryWatts := 0.0
+	batteryIsCharging := false
+	batteryExternalConnected := false
+	batteryFullyCharged := false
+	wifiDebuggingEnabled := false
+	wirelessTechnology := ""
+
+	var storageInfo *models.StorageInfo
+	batteryCh := make(chan batteryMetrics, 1)
+	go func() { batteryCh <- collectBatteryMetrics(*device) }()
+	lockdownConn, err := ios.ConnectLockdownWithSession(*device)
+	if err == nil {
+		if val, err := lockdownConn.GetValueForDomain("EnableWifiDebugging", "com.apple.mobile.wireless_lockdown"); err == nil {
+			wifiDebuggingEnabled, _ = val.(bool)
+		}
+		// ActiveWirelessTechnology lives in the lockdownd root domain
+		// (GetValue request without a Domain field).
+		if val, err := lockdownConn.GetValueForDomain("ActiveWirelessTechnology", ""); err == nil {
+			wirelessTechnology = getStringValue(val)
+		}
+		// Try to get PhoneNumber
+		if val, err := lockdownConn.GetValueForDomain("PhoneNumber", ""); err == nil {
+			phoneNumber = getStringValue(val)
+		}
+		// Try to get HumanReadableProductVersionString (prefer this over ProductVersion)
+		if val, err := lockdownConn.GetValueForDomain("HumanReadableProductVersionString", ""); err == nil {
+			humanReadableVersion = getStringValue(val)
+		}
+		// Try to get RegulatoryModelNumber (e.g. A2634)
+		if val, err := lockdownConn.GetValueForDomain("RegulatoryModelNumber", ""); err == nil {
+			regulatoryModel = getStringValue(val)
+		}
+		// Try to get IMEI2
+		if val, err := lockdownConn.GetValueForDomain("InternationalMobileEquipmentIdentity2", ""); err == nil {
+			imei2 = getStringValue(val)
+		}
+		// Try to get IMSI
+		if val, err := lockdownConn.GetValueForDomain("InternationalMobileSubscriberIdentity", ""); err == nil {
+			imsi = getStringValue(val)
+		}
+		// Try to get EthernetAddress if missing
+		if ethernetAddress == "" {
+			if val, err := lockdownConn.GetValueForDomain("EthernetAddress", ""); err == nil {
+				ethernetAddress = getStringValue(val)
+			}
+		}
+		// Try to get SIM info (carrier info, sim status, etc)
+		// Note: These might be in com.apple.commcenter or other domains
+		if val, err := lockdownConn.GetValueForDomain("SIMStatus", ""); err == nil {
+			simStatus = getStringValue(val)
+		}
+		if val, err := lockdownConn.GetValueForDomain("SIMTrayStatus", ""); err == nil {
+			simTrayStatus = getStringValue(val)
+		}
+		// Extract carrier info from CarrierBundleInfoArray (it's an array of SIM info)
+		if val, err := lockdownConn.GetValueForDomain("CarrierBundleInfoArray", ""); err == nil {
+			if carrierArray, ok := val.([]interface{}); ok {
+				logger.Info().Msgf("Found CarrierBundleInfoArray with %d items", len(carrierArray))
+				for idx, item := range carrierArray {
+					if carrierDict, ok := item.(map[string]interface{}); ok {
+						slot := getStringValue(carrierDict["Slot"])
+						bundleID := getStringValue(carrierDict["CFBundleIdentifier"])
+						logger.Info().Msgf("CarrierBundleInfo[%d]: Slot=%s, BundleID=%s", idx, slot, bundleID)
+
+						// Extract carrier name from bundle ID (e.g., "com.apple.ChinaTelecom_USIM_cn" -> "ChinaTelecom_USIM_cn")
+						carrierName := bundleID
+						if len(bundleID) > 0 {
+							// Remove "com.apple." prefix only
+							if idx := strings.Index(bundleID, "com.apple."); idx == 0 {
+								carrierName = bundleID[10:]
+							}
+						}
+						// Assign to sim1Info or sim2Info based on Slot
+						if slot == "kOne" {
+							sim1Info = carrierName
+							logger.Info().Msgf("Set SIM1Info: %s", sim1Info)
+							// Also get IMSI for slot 1 if available
+							if imsiVal := getStringValue(carrierDict["InternationalMobileSubscriberIdentity"]); imsiVal != "" {
+								imsi = imsiVal
+							}
+						} else if slot == "kTwo" {
+							sim2Info = carrierName
+							logger.Info().Msgf("Set SIM2Info: %s", sim2Info)
+						}
+					}
+				}
+			} else {
+				logger.Warn().Msg("CarrierBundleInfoArray is not an array")
+			}
+		} else {
+			logger.Warn().Msgf("Failed to get CarrierBundleInfoArray: %v", err)
+		}
+
+		// Determine iCloud login status (best-effort)
+		// Prefer com.apple.mobile.data_sync: AccountNames often contains iCloud and/or iCloud email addresses.
+		if val, err := lockdownConn.GetValueForDomain("", "com.apple.mobile.data_sync"); err == nil && val != nil {
+			icloudEnabled = isICloudAccountPresent(val)
+		}
+
+		// Fallback iCloud signals via iTunes store domains (some systems expose AppleID/DSID there)
+		if !icloudEnabled {
+			for _, domain := range []string{"com.apple.mobile.iTunes.store", "com.apple.mobile.iTunes", "com.apple.itunesstored"} {
+				if v, err := lockdownConn.GetValueForDomain("AppleID", domain); err == nil {
+					if s := strings.TrimSpace(getStringValue(v)); s != "" {
+						icloudEnabled = true
+						break
+					}
+				}
+
+				if v, err := lockdownConn.GetValueForDomain("DSPersonID", domain); err == nil {
+					s := strings.TrimSpace(getStringValue(v))
+					if s != "" && s != "0" {
+						icloudEnabled = true
+						break
+					}
+				}
+
+				if v, err := lockdownConn.GetValueForDomain("AccountID", domain); err == nil {
+					s := strings.TrimSpace(getStringValue(v))
+					if s != "" && s != "0" {
+						icloudEnabled = true
+						break
+					}
+				}
+			}
+		}
+
+		// Determine Find My status / Activation Lock state
+		// Prefer NVRAM exports: NonVolatileRAM has keys like fm-spstatus and fm-activation-locked.
+		// Keep the existing field name apple_id_locked for UI compatibility.
+		appleIDLocked = isFindMyEnabledFromAllValues(allValues.Value)
+		if !appleIDLocked {
+			// Fallback: old lockdown domain (may not exist on newer systems)
+			if fmipVal, err := lockdownConn.GetValueForDomain("FMIPEnabled", "com.apple.fmip"); err == nil {
+				if enabled, ok := fmipVal.(bool); ok && enabled {
+					appleIDLocked = true
+				}
+			}
+		}
+
+		// Get storage information
+		if diskUsage, err := lockdownConn.GetValueForDomain("", "com.apple.disk_usage"); err == nil {
+			diskUsageFactory, _ := lockdownConn.GetValueForDomain("", "com.apple.disk_usage.factory")
+			storageInfo = parseStorageInfo(diskUsage, diskUsageFactory)
+		}
+	}
+
+	battery := <-batteryCh
+	if battery.level > 0 {
+		batteryLevel = battery.level
+	}
+	batteryHealth = battery.health
+	batteryCycleCount = battery.cycleCount
+	batteryWatts = battery.watts
+	batteryIsCharging = battery.isCharging
+	batteryExternalConnected = battery.externalConnected
+	batteryFullyCharged = battery.fullyCharged
+
+	// Use HumanReadableProductVersionString if available
+	if humanReadableVersion != "" {
+		version = humanReadableVersion
+	}
+
+	// Use RegulatoryModelNumber as ProductName if available (e.g. A2634)
+	// Otherwise fallback to HardwareModel (e.g. D17AP)
+	productName := hardwareModel
+	if regulatoryModel != "" {
+		productName = regulatoryModel
+	}
+
+	if lockdownConn != nil {
+		lockdownConn.Close()
+	}
+
+	deviceInfo := models.DeviceInfo{
+		UDID:                 udid,
+		Name:                 name,
+		Model:                model,
+		Version:              version,
+		Color:                color,
+		EnclosureColor:       enclosureColor,
+		ProductType:          productType,
+		ProductName:          productName,
+		RegulatoryModel:      regulatoryModel,
+		BuildVersion:         buildVersion,
+		FirmwareVersion:      firmwareVersion,
+		SerialNumber:         serialNumber,
+		IMEI:                 imei,
+		IMEI2:                imei2,
+		PhoneNumber:          phoneNumber,
+		ECID:                 ecid,
+		RegionInfo:           regionInfo,
+		ModelNumber:          modelNumber,
+		SalesModel:           salesModel,
+		TimeZone:             timeZone,
+		ActivationState:      activationState,
+		IsPaired:             true,
+		ConnectionType:       normalizeConnectionType(device.Properties.ConnectionType),
+		WiFiDebuggingEnabled: wifiDebuggingEnabled,
+		WirelessTechnology:   wirelessTechnology,
+		CPUArchitecture:      cpuArch,
+		WiFiAddress:          wifiAddr,
+		EthernetAddress:      ethernetAddress,
+		BluetoothAddress:     btAddr,
+		ICloudEnabled:        icloudEnabled,
+		AppleIDLocked:        appleIDLocked,
+		IMSI:                 imsi,
+		SIMStatus:            simStatus,
+		SIMTrayStatus:        simTrayStatus,
+		SIM1Info:             sim1Info,
+		SIM2Info:             sim2Info,
+		StorageInfo:          storageInfo,
+		// Note: Battery info, jailbreak detection, and warranty info
+		// require additional API calls or cannot be reliably detected
+		IsJailbroken:             false, // Placeholder
+		BatteryLevel:             batteryLevel,
+		BatteryIsCharging:        batteryIsCharging,
+		BatteryExternalConnected: batteryExternalConnected,
+		BatteryFullyCharged:      batteryFullyCharged,
+		BatteryHealth:            batteryHealth,
+		BatteryCycleCount:        batteryCycleCount,
+		BatteryWatts:             batteryWatts,
+		CrashLogCount:            0, // Requires CrashReportMover service
+	}
+
+	return deviceInfo, true
 }
 
 func isICloudAccountPresent(domainValue interface{}) bool {
@@ -722,6 +758,7 @@ func (s *Service) AddSimulatedDevice(info models.DeviceInfo, apps []models.AppIn
 		s.Simulated = make(map[string]models.SimulatedDevice)
 	}
 	s.Simulated[info.UDID] = models.SimulatedDevice{Info: info, Apps: apps}
+	s.invalidateListCacheLocked()
 }
 
 // ClearSimulatedDevices removes all simulated devices and returns their UDIDs
@@ -733,6 +770,7 @@ func (s *Service) ClearSimulatedDevices() []string {
 		udids = append(udids, udid)
 		delete(s.Simulated, udid)
 	}
+	s.invalidateListCacheLocked()
 	return udids
 }
 
@@ -745,9 +783,18 @@ func (s *Service) RemoveSimulatedDevice(udid string) bool {
 	}
 	if _, exists := s.Simulated[udid]; exists {
 		delete(s.Simulated, udid)
+		s.invalidateListCacheLocked()
 		return true
 	}
 	return false
+}
+
+// invalidateListCacheLocked drops the cached /devices response. Caller must
+// hold s.mu.
+func (s *Service) invalidateListCacheLocked() {
+	s.listCacheMu.Lock()
+	s.listCache = nil
+	s.listCacheMu.Unlock()
 }
 
 // ListSimulatedProfiles reads saved profiles from disk
@@ -1481,7 +1528,9 @@ func FormatStorageProgressBar(storageInfo *models.StorageInfo, width int) string
 }
 
 // extractHardwareDetails extracts detailed hardware information from device
-func extractHardwareDetails(allValues interface{}, lockdownConn *ios.LockDownConnection, device *ios.DeviceEntry) *models.HardwareDetails {
+// ExtractHardwareDetails derives hardware details from a full lockdown values
+// dump, plus a few extra keys queried over the provided lockdown connection.
+func ExtractHardwareDetails(allValues interface{}, lockdownConn *ios.LockDownConnection) *models.HardwareDetails {
 	details := &models.HardwareDetails{}
 
 	// Try to convert allValues to a map for easier access

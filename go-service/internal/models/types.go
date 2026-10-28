@@ -26,31 +26,32 @@ type DeviceInfo struct {
 	IsJailbroken             bool                   `json:"is_jailbroken"`             // Jailbreak status
 	ConnectionType           string                 `json:"connection_type"`           // usb | network | unknown
 	WiFiDebuggingEnabled     bool                   `json:"wifi_debugging_enabled"`
-	CPUArchitecture          string                 `json:"cpu_architecture"`           // CPU type
-	DiskType                 string                 `json:"disk_type,omitempty"`        // Storage type
-	BatteryLevel             int                    `json:"battery_level"`              // Battery percentage
-	BatteryIsCharging        bool                   `json:"battery_is_charging"`        // Battery is actively charging
-	BatteryExternalConnected bool                   `json:"battery_external_connected"` // External power is connected
-	BatteryFullyCharged      bool                   `json:"battery_fully_charged"`      // Battery is fully charged
-	BatteryHealth            int                    `json:"battery_health"`             // Battery health percentage
-	BatteryCycleCount        int                    `json:"battery_cycle_count"`        // Charge cycles
-	BatteryWatts             float64                `json:"battery_watts,omitempty"`    // Charging wattage
-	ManufactureDate          string                 `json:"manufacture_date"`           // Production date
-	WarrantyExpiration       string                 `json:"warranty_expiration"`        // Warranty expiration
-	AppleIDLocked            bool                   `json:"apple_id_locked"`            // Apple ID lock status (FMIP)
-	ICloudEnabled            bool                   `json:"icloud_enabled"`             // iCloud status
-	WiFiAddress              string                 `json:"wifi_address"`               // WiFi MAC address
-	EthernetAddress          string                 `json:"ethernet_address"`           // Cellular/Ethernet MAC address
-	BluetoothAddress         string                 `json:"bluetooth_address"`          // Bluetooth MAC address
-	IMSI                     string                 `json:"imsi,omitempty"`             // International Mobile Subscriber Identity
-	SIMStatus                string                 `json:"sim_status,omitempty"`       // SIM Status
-	SIMTrayStatus            string                 `json:"sim_tray_status,omitempty"`  // SIM Tray Status
-	SIM1Info                 string                 `json:"sim1_info,omitempty"`        // SIM 1 Carrier Info
-	SIM2Info                 string                 `json:"sim2_info,omitempty"`        // SIM 2 Carrier Info
-	CrashLogCount            int                    `json:"crash_log_count"`            // Number of crash logs
-	StorageInfo              *StorageInfo           `json:"storage_info,omitempty"`     // Device storage information
-	HardwareDetails          *HardwareDetails       `json:"hardware_details,omitempty"` // Detailed hardware information
-	RawData                  map[string]interface{} `json:"raw_data,omitempty"`         // All raw device data from GetValues
+	WirelessTechnology       string                 `json:"wireless_technology,omitempty"` // Active radio tech (e.g. kCTWirelessTechnologyLTE)
+	CPUArchitecture          string                 `json:"cpu_architecture"`              // CPU type
+	DiskType                 string                 `json:"disk_type,omitempty"`           // Storage type
+	BatteryLevel             int                    `json:"battery_level"`                 // Battery percentage
+	BatteryIsCharging        bool                   `json:"battery_is_charging"`           // Battery is actively charging
+	BatteryExternalConnected bool                   `json:"battery_external_connected"`    // External power is connected
+	BatteryFullyCharged      bool                   `json:"battery_fully_charged"`         // Battery is fully charged
+	BatteryHealth            int                    `json:"battery_health"`                // Battery health percentage
+	BatteryCycleCount        int                    `json:"battery_cycle_count"`           // Charge cycles
+	BatteryWatts             float64                `json:"battery_watts,omitempty"`       // Charging wattage
+	ManufactureDate          string                 `json:"manufacture_date"`              // Production date
+	WarrantyExpiration       string                 `json:"warranty_expiration"`           // Warranty expiration
+	AppleIDLocked            bool                   `json:"apple_id_locked"`               // Apple ID lock status (FMIP)
+	ICloudEnabled            bool                   `json:"icloud_enabled"`                // iCloud status
+	WiFiAddress              string                 `json:"wifi_address"`                  // WiFi MAC address
+	EthernetAddress          string                 `json:"ethernet_address"`              // Cellular/Ethernet MAC address
+	BluetoothAddress         string                 `json:"bluetooth_address"`             // Bluetooth MAC address
+	IMSI                     string                 `json:"imsi,omitempty"`                // International Mobile Subscriber Identity
+	SIMStatus                string                 `json:"sim_status,omitempty"`          // SIM Status
+	SIMTrayStatus            string                 `json:"sim_tray_status,omitempty"`     // SIM Tray Status
+	SIM1Info                 string                 `json:"sim1_info,omitempty"`           // SIM 1 Carrier Info
+	SIM2Info                 string                 `json:"sim2_info,omitempty"`           // SIM 2 Carrier Info
+	CrashLogCount            int                    `json:"crash_log_count"`               // Number of crash logs
+	StorageInfo              *StorageInfo           `json:"storage_info,omitempty"`        // Device storage information
+	HardwareDetails          *HardwareDetails       `json:"hardware_details,omitempty"`    // Detailed hardware information
+	RawData                  map[string]interface{} `json:"raw_data,omitempty"`            // All raw device data from GetValues
 }
 
 // HardwareDetails contains detailed hardware information
@@ -143,6 +144,8 @@ type AppInfo struct {
 	IconData               *string                `json:"icon_data,omitempty"`          // Base64 encoded
 	AuthType               string                 `json:"auth_type"`                    // apple_store, shared, development, unknown
 	PurchaserAppleID       string                 `json:"purchaser_apple_id,omitempty"` // App Store purchaser account
+	StoreVersionID         string                 `json:"store_version_id,omitempty"`   // External version identifier of the installed build
+	StoreItemID            int64                  `json:"store_item_id,omitempty"`      // Catalog item id, the only handle for delisted apps
 	IsSharedLibrary        bool                   `json:"is_shared_library,omitempty"`  // Synthetic shared App Group entry
 	SharedGroupID          string                 `json:"shared_group_id,omitempty"`    // App Group identifier
 	SharedByBundleIDs      []string               `json:"shared_by_bundle_ids,omitempty"`
@@ -196,12 +199,29 @@ type AuthResponse struct {
 	CookieFile  string `json:"cookie_file,omitempty"`
 	Message     string `json:"message"`
 	ErrorCode   string `json:"error_code,omitempty"` // Error code for frontend i18n
+	// AppStoreSessionError is set when login succeeded (e.g. GSA) but the
+	// App Store session could not be established. Downloads will fail until
+	// a complete App Store session exists.
+	AppStoreSessionError string `json:"app_store_session_error,omitempty"`
 }
 
 type AccountInfo struct {
 	Email      string `json:"email"`
 	Name       string `json:"name"`
 	StoreFront string `json:"storefront"`
+}
+
+// LoginSessionState reports what is stored locally for an account, so the user
+// can see whether the app can reuse a saved sign-in without asking for a code.
+type LoginSessionState struct {
+	Email              string `json:"email"`
+	HasAccount         bool   `json:"has_account"`
+	HasAppStoreSession bool   `json:"has_app_store_session"`
+	HasStoredPassword  bool   `json:"has_stored_password"`
+	HasGSACredentials  bool   `json:"has_gsa_credentials"`
+	HasAnisette        bool   `json:"has_anisette"`
+	HasDeviceMetadata  bool   `json:"has_device_metadata"`
+	StoreFront         string `json:"storefront,omitempty"`
 }
 
 type AppSearchResult struct {
@@ -258,10 +278,13 @@ type AppVersionHistory struct {
 }
 
 type DownloadProgress struct {
-	Status   string  `json:"status"`
-	Progress float64 `json:"progress"`
-	Message  string  `json:"message"`
-	FilePath string  `json:"file_path,omitempty"`
+	Status                 string  `json:"status"`
+	Progress               float64 `json:"progress"`
+	Message                string  `json:"message"`
+	FilePath               string  `json:"file_path,omitempty"`
+	BytesDownloaded        int64   `json:"bytes_downloaded,omitempty"`
+	TotalBytes             int64   `json:"total_bytes,omitempty"`
+	SpeedBytesPerSecond    float64 `json:"speed_bytes_per_second,omitempty"`
 }
 
 type IPAInfo struct {
@@ -325,14 +348,18 @@ type IPADetails struct {
 	Frameworks      []*FrameworkItem       `json:"frameworks"` // All frameworks from .app/Frameworks/
 	Plugins         []*PluginItem          `json:"plugins"`    // All plugins from .app/PlugIns/
 	Properties      map[string]interface{} `json:"properties"`
+	IconBase64      string                 `json:"icon_base64,omitempty"` // largest app icon, standard PNG, base64
 }
 
 // SigningOptions represents the signing configuration similar to Feather's Options
 type SigningOptions struct {
 	// Pre Modifications
-	AppName       *string `json:"app_name,omitempty"`
-	AppVersion    *string `json:"app_version,omitempty"`
-	AppIdentifier *string `json:"app_identifier,omitempty"`
+	AppName          *string `json:"app_name,omitempty"` // CFBundleDisplayName
+	AppVersion       *string `json:"app_version,omitempty"`
+	AppIdentifier    *string `json:"app_identifier,omitempty"`
+	AppBuildVersion  *string `json:"app_build_version,omitempty"` // CFBundleVersion
+	MinimumOSVersion *string `json:"minimum_os_version,omitempty"`
+	Appearance       *string `json:"appearance,omitempty"` // UIUserInterfaceStyle: Light/Dark/empty=default
 
 	// Injection Options
 	InjectPath   InjectPath   `json:"inject_path"`   // @executable_path or @rpath
@@ -343,11 +370,50 @@ type SigningOptions struct {
 	DisInjectionFiles []string `json:"dis_injection_files"` // Mach-O load paths to remove (e.g., "@executable_path/demo1.dylib")
 	RemoveFiles       []string `json:"remove_files"`        // App files to remove (e.g., "Frameworks/CydiaSubstrate.framework")
 
-	// Options
+	// Options (common capabilities)
 	FileSharing        bool `json:"file_sharing"`        // Enable UISupportsDocumentBrowser
 	ITunesFileSharing  bool `json:"itunes_file_sharing"` // Enable UIFileSharingEnabled
 	RemoveURLScheme    bool `json:"remove_url_scheme"`   // Remove CFBundleURLTypes
 	RemoveProvisioning bool `json:"remove_provisioning"` // Remove embedded.mobileprovision
+
+	// Display & status bar
+	StatusBarHidden              bool `json:"status_bar_hidden"`                // UIStatusBarHidden
+	ViewControllerBasedStatusBar bool `json:"view_controller_based_status_bar"` // UIViewControllerBasedStatusBarAppearance
+	PrerenderedIcon              bool `json:"prerendered_icon"`                 // UIPrerenderedIcon
+
+	// Network & behavior
+	RequiresPersistentWiFi bool `json:"requires_persistent_wifi"` // UIRequiresPersistentWiFi
+	ExitsOnSuspend         bool `json:"exits_on_suspend"`         // UIApplicationExitsOnSuspend
+	AllowsArbitraryLoads   bool `json:"allows_arbitrary_loads"`   // NSAppTransportSecurity.NSAllowsArbitraryLoads
+	NoEncryptionDecl       bool `json:"no_encryption_decl"`       // ITSAppUsesNonExemptEncryption = false
+
+	// Interface orientations (empty = keep original)
+	OrientationPortrait           bool `json:"orientation_portrait"`
+	OrientationLandscapeLeft      bool `json:"orientation_landscape_left"`
+	OrientationLandscapeRight     bool `json:"orientation_landscape_right"`
+	OrientationPortraitUpsideDown bool `json:"orientation_portrait_upside_down"`
+
+	// Background modes (empty = keep original)
+	BgAudio    bool `json:"bg_audio"`
+	BgLocation bool `json:"bg_location"`
+	BgFetch    bool `json:"bg_fetch"`
+	BgVoip     bool `json:"bg_voip"`
+
+	// Advanced parameters
+	RequiredDeviceCapabilities      string            `json:"required_device_capabilities,omitempty"` // comma-separated
+	RemoveSupportedDevices          bool              `json:"remove_supported_devices"`
+	BundleLocalizations             string            `json:"bundle_localizations,omitempty"` // comma-separated
+	DevelopmentRegion               string            `json:"development_region,omitempty"`
+	ApplicationCategoryType         string            `json:"application_category_type,omitempty"`
+	SupportsMultipleScenes          *bool             `json:"supports_multiple_scenes,omitempty"` // tri-state: nil = keep
+	CustomURLScheme                 string            `json:"custom_url_scheme,omitempty"`
+	RemoveDocumentTypes             bool              `json:"remove_document_types"`
+	RemoveExportedTypeDeclarations  bool              `json:"remove_exported_type_declarations"`
+	RemoveApplicationQueriesSchemes bool              `json:"remove_application_queries_schemes"`
+	PrivacyOverrides                map[string]string `json:"privacy_overrides,omitempty"` // key=NSxxx, value="" => remove
+	RemoveLaunchScreen              bool              `json:"remove_launch_screen"`
+	RemoveWatchApp                  bool              `json:"remove_watch_app"`
+	RemovePlugIns                   bool              `json:"remove_plug_ins"`
 }
 
 // InjectPath represents the dylib injection path prefix

@@ -117,6 +117,7 @@ func (s *Service) ListApps(device ios.DeviceEntry, deviceAppleID string) ([]mode
 		// shows "calculating" instead of a misleading 0 B until async fill completes.
 		appInfo.SizeMeasured = appInfo.AppSize > 0 || appInfo.DataSize > 0
 		appInfo.PurchaserAppleID = extractPurchaserAppleID(app)
+		appInfo.StoreVersionID, appInfo.StoreItemID = extractStoreIdentifiers(app)
 
 		// Track App Group containers shared by multiple apps (e.g. LiveContainer).
 		for groupID, groupPath := range extractGroupContainers(app) {
@@ -293,11 +294,11 @@ func (s *Service) CalculateAppSizesAsync(device ios.DeviceEntry, udid string, bu
 				Progress: 100,
 				Message:  "App size calculated",
 				Data: map[string]interface{}{
-					"udid":      udid,
-					"bundle_id": bundleID,
-					"app_size":  appSize,
-					"data_size": dataSize,
-					"size_measured": true,
+					"udid":               udid,
+					"bundle_id":          bundleID,
+					"app_size":           appSize,
+					"data_size":          dataSize,
+					"size_measured":      true,
 					"purchaser_apple_id": extractPurchaserAppleID(app),
 				},
 			})
@@ -329,13 +330,13 @@ func (s *Service) CalculateAppSizesAsync(device ios.DeviceEntry, udid string, bu
 				Progress: 100,
 				Message:  "Shared library size calculated",
 				Data: map[string]interface{}{
-					"udid":          udid,
-					"bundle_id":     sharedBundleID,
-					"app_size":      uint64(0),
-					"data_size":     sharedSize,
-					"size_measured": true,
-					"is_shared_library": true,
-					"shared_group_id": groupID,
+					"udid":                 udid,
+					"bundle_id":            sharedBundleID,
+					"app_size":             uint64(0),
+					"data_size":            sharedSize,
+					"size_measured":        true,
+					"is_shared_library":    true,
+					"shared_group_id":      groupID,
 					"shared_by_bundle_ids": owners,
 				},
 			})
@@ -678,7 +679,6 @@ func getBestVersion(app installationproxy.AppInfo) string {
 	return ""
 }
 
-
 func coerceUint64(value interface{}) uint64 {
 	switch typed := value.(type) {
 	case uint64:
@@ -747,26 +747,9 @@ func parseITunesMetadata(raw []byte) map[string]interface{} {
 }
 
 func extractPurchaserAppleID(app installationproxy.AppInfo) string {
-	// Prefer structured iTunesMetadata when present as bytes/map.
-	if raw, ok := app["iTunesMetadata"]; ok && raw != nil {
-		switch typed := raw.(type) {
-		case []byte:
-			if parsed := parseITunesMetadata(typed); parsed != nil {
-				if email := findPurchaserEmail(parsed); email != "" {
-					return email
-				}
-			}
-		case map[string]interface{}:
-			if email := findPurchaserEmail(typed); email != "" {
-				return email
-			}
-		case string:
-			// Sometimes metadata arrives already as XML/text.
-			if parsed := parseITunesMetadata([]byte(typed)); parsed != nil {
-				if email := findPurchaserEmail(parsed); email != "" {
-					return email
-				}
-			}
+	for _, metadata := range iTunesMetadataMaps(app) {
+		if email := findPurchaserEmail(metadata); email != "" {
+			return email
 		}
 	}
 
@@ -775,6 +758,53 @@ func extractPurchaserAppleID(app installationproxy.AppInfo) string {
 		return email
 	}
 	return ""
+}
+
+// iTunesMetadataMaps returns the parsed iTunesMetadata dictionary of an
+// installed app, accepting the byte, decoded and text forms that
+// installation_proxy can hand back.
+func iTunesMetadataMaps(app installationproxy.AppInfo) []map[string]interface{} {
+	raw, ok := app["iTunesMetadata"]
+	if !ok || raw == nil {
+		return nil
+	}
+
+	switch typed := raw.(type) {
+	case []byte:
+		if parsed := parseITunesMetadata(typed); parsed != nil {
+			return []map[string]interface{}{parsed}
+		}
+	case map[string]interface{}:
+		return []map[string]interface{}{typed}
+	case string:
+		// Sometimes metadata arrives already as XML/text.
+		if parsed := parseITunesMetadata([]byte(typed)); parsed != nil {
+			return []map[string]interface{}{parsed}
+		}
+	}
+
+	return nil
+}
+
+// extractStoreIdentifiers reads the App Store handles Apple records in an
+// installed app's iTunesMetadata. softwareVersionExternalIdentifier names the
+// build the store delivered, which is the same identifier a download request can
+// be pinned to, and itemId is the catalog id that keeps a delisted app
+// addressable after bundle-identifier lookup stops returning it.
+func extractStoreIdentifiers(app installationproxy.AppInfo) (string, int64) {
+	for _, metadata := range iTunesMetadataMaps(app) {
+		versionID := models.NormalizeStoreVersionID(metadata["softwareVersionExternalIdentifier"])
+		itemID := int64(coerceUint64(metadata["itemId"]))
+		if itemID == 0 {
+			itemID = int64(coerceUint64(metadata["itemID"]))
+		}
+
+		if versionID != "" || itemID > 0 {
+			return versionID, itemID
+		}
+	}
+
+	return "", 0
 }
 
 func firstString(values map[string]interface{}, keys ...string) string {
