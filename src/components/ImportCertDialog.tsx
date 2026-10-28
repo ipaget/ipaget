@@ -168,6 +168,11 @@ export default function ImportCertDialog({
       onSuccess();
     } catch (error: any) {
       console.error("Failed to import free signing certificate:", error);
+      if (String(error.message || "").includes("Two-factor authentication is required for certificate generation")) {
+        onClose();
+        setShowLoginDialog(true, accountEmail, "certificate");
+        return;
+      }
       showError(t("signing.import.error"), error.message);
     } finally {
       setLoading(false);

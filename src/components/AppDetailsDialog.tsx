@@ -1,12 +1,12 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Dialog, Transition } from "@headlessui/react";
-import { Package, Copy } from "lucide-react";
+import { Package, Copy, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useToastStore } from "../store/toastStore";
 import { AppInfo } from "../lib/goService";
 import EntitlementsView from "./EntitlementsView";
 import RawDataViewer from "./RawDataViewer";
-import { useCopyToClipboard, useUpdateEffect } from "react-use";
+import { useCopyToClipboard } from "react-use";
 
 interface AppDetailsDialogProps {
   app: AppInfo | null;
@@ -22,11 +22,10 @@ export default function AppDetailsDialog({ app, appIcon, onClose }: AppDetailsDi
   const [displayedAppIcon, setDisplayedAppIcon] = useState<string | undefined>(appIcon);
   const [clipboardState, copyToClipboard] = useCopyToClipboard();
 
-  // Update displayed app details when selected app changes using useUpdateEffect
-  useUpdateEffect(() => {
+  useEffect(() => {
+    setDisplayedAppDetails(app);
+    setDisplayedAppIcon(appIcon);
     if (app) {
-      setDisplayedAppDetails(app);
-      setDisplayedAppIcon(appIcon);
       setDetailsTab('basic');
     }
   }, [app, appIcon]);
@@ -137,6 +136,14 @@ export default function AppDetailsDialog({ app, appIcon, onClose }: AppDetailsDi
                         <h4 className="text-xl font-bold text-gray-900 truncate">{displayedAppDetails.name || displayedAppDetails.bundle_id}</h4>
                         <p className="text-sm text-gray-500 truncate">{displayedAppDetails.bundle_id}</p>
                       </div>
+                      <button
+                        type="button"
+                        onClick={onClose}
+                        className="flex-shrink-0 rounded-md p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
+                        aria-label={t("common.close")}
+                      >
+                        <X size={20} />
+                      </button>
                     </div>
 
                     {/* Tabs */}

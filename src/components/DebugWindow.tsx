@@ -1,15 +1,18 @@
-import { X, Terminal, Bug, Send, Activity, Save, PlusCircle, Trash2, Edit, PlayCircle, StopCircle, Loader, Database, FolderOpen } from "lucide-react";
+import { X, Terminal, Bug, Send, Activity, Save, PlusCircle, Trash2, Edit, PlayCircle, StopCircle, Loader, Database, FolderOpen, RotateCw, Server, Power, KeyRound } from "lucide-react";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { useDebugStore, LogEntry } from "../store/debugStore";
 import { useDeviceStore } from "../store/deviceStore";
 import { useTaskStore } from "../store/taskStore";
-import { goServiceClient, SimulatedDeviceProfile, DeviceInfo } from "../lib/goService";
+import { useAccountStore } from "../store/accountStore";
+import { goServiceClient, SimulatedDeviceProfile, DeviceInfo, LoginSessionState } from "../lib/goService";
 import Ansi from "ansi-to-react";
 import { useTaskSubscription } from "../hooks/useTask";
 import LogJsonViewer from "./LogJsonViewer";
+import ConfirmDialog from "./ConfirmDialog";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { relaunch } from "@tauri-apps/plugin-process";
 
 interface DebugWindowProps {
   onClose: () => void;
@@ -51,6 +54,14 @@ export default function DebugWindow({ onClose, standalone = false }: DebugWindow
 
   const [testTaskId, setTestTaskId] = useState<string | undefined>();
   const [isTestTaskRunning, setIsTestTaskRunning] = useState(false);
+  const [runtimeAction, setRuntimeAction] = useState<"frontend" | "backend" | "program" | null>(null);
+  const [runtimeActionMessage, setRuntimeActionMessage] = useState<{
+    type: "info" | "success" | "error";
+    text: string;
+  } | null>(null);
+  const [sessionStates, setSessionStates] = useState<Record<string, LoginSessionState>>({});
+  const [clearingSessionEmail, setClearingSessionEmail] = useState<string | null>(null);
+  const [pendingClearEmail, setPendingClearEmail] = useState<string | null>(null);
   const [isMainWsConnected, setIsMainWsConnected] = useState(false);
   const [isLogWsConnected, setIsLogWsConnected] = useState(false);
   const [backendInstanceId, setBackendInstanceId] = useState<string | null>(null);
@@ -158,6 +169,122 @@ export default function DebugWindow({ onClose, standalone = false }: DebugWindow
       },
     ]);
   }, [maxLogs]);
+
+  const handleRestartFrontend = useCallback(async () => {
+    if (runtimeAction) return;
+
+    setRuntimeAction("frontend");
+    setRuntimeActionMessage(null);
+    try {
+      await invoke("restart_main_frontend");
+      setRuntimeActionMessage({ type: "success", text: "Main frontend reload requested." });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRuntimeActionMessage({ type: "error", text: `Failed to reload main frontend: ${message}` });
+    } finally {
+      setRuntimeAction(null);
+    }
+  }, [runtimeAction]);
+
+  const handleRestartBackend = useCallback(async () => {
+    if (runtimeAction) return;
+
+    setRuntimeAction("backend");
+    setRuntimeActionMessage({ type: "info", text: "Restarting Go service..." });
+    try {
+      await invoke("stop_go_service");
+      const port = await invoke<number>("start_go_service");
+      setRuntimeActionMessage({ type: "success", text: `Go service restarted on port ${port}.` });
+      addBackendLog("info", `Go service restarted from Debug Tools on port ${port}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRuntimeActionMessage({ type: "error", text: `Failed to restart Go service: ${message}` });
+      addBackendLog("error", `Go service restart failed: ${message}`);
+    } finally {
+      setRuntimeAction(null);
+    }
+  }, [addBackendLog, runtimeAction]);
+
+  const handleRestartProgram = useCallback(async () => {
+    if (runtimeAction) return;
+
+    setRuntimeAction("program");
+    setRuntimeActionMessage({ type: "info", text: "Stopping services and restarting iPAGet..." });
+    let backendStopped = false;
+    try {
+      const isDevMode = await invoke<boolean>("is_dev_mode");
+      if (isDevMode) {
+        await invoke("stop_go_service");
+        backendStopped = true;
+        await invoke("restart_dev_host");
+        return;
+      }
+
+      await invoke("stop_go_service");
+      backendStopped = true;
+      await relaunch();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (backendStopped) {
+        try {
+          await invoke("start_go_service");
+        } catch (restartError) {
+          addBackendLog("error", `Failed to restore Go service after relaunch error: ${String(restartError)}`);
+        }
+      }
+      setRuntimeActionMessage({ type: "error", text: `Failed to restart iPAGet: ${message}` });
+      setRuntimeAction(null);
+    }
+  }, [addBackendLog, runtimeAction]);
+
+  const { accounts: signedInAccounts, selectedAccount: activeAccount, loadAccounts } = useAccountStore();
+
+  const refreshSessionStates = useCallback(async (emails: string[]) => {
+    const entries = await Promise.all(
+      emails.map(async (email) => {
+        try {
+          return [email, await goServiceClient.getLoginSessionState(email)] as const;
+        } catch (error) {
+          console.error("Failed to read sign-in session state:", error);
+          return [email, null] as const;
+        }
+      })
+    );
+
+    const next: Record<string, LoginSessionState> = {};
+    for (const [email, state] of entries) {
+      if (state) {
+        next[email] = state;
+      }
+    }
+    setSessionStates(next);
+  }, []);
+
+  useEffect(() => {
+    void loadAccounts();
+  }, [loadAccounts]);
+
+  useEffect(() => {
+    if (signedInAccounts.length === 0) {
+      setSessionStates({});
+      return;
+    }
+    void refreshSessionStates(signedInAccounts.map((account) => account.email));
+  }, [signedInAccounts, refreshSessionStates]);
+
+  const handleClearSession = useCallback(async (email: string) => {
+    setClearingSessionEmail(email);
+    setPendingClearEmail(null);
+    try {
+      await goServiceClient.clearLoginSession(email);
+      await refreshSessionStates(signedInAccounts.map((account) => account.email));
+      addBackendLog("info", `Cleared saved sign-in data for ${email}`);
+    } catch (error) {
+      addBackendLog("error", `Failed to clear saved sign-in data for ${email}: ${String(error)}`);
+    } finally {
+      setClearingSessionEmail(null);
+    }
+  }, [addBackendLog, refreshSessionStates, signedInAccounts]);
 
   // Listen for frontend logs and store data from main window (only in debug window)
   useEffect(() => {
@@ -965,6 +1092,7 @@ export default function DebugWindow({ onClose, standalone = false }: DebugWindow
   );
 
   const Panel = (
+    <>
       <div className={standalone ? "h-full w-full flex flex-col" : "bg-white rounded-lg shadow-2xl w[90vw] h-[80vh] flex flex-col"}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200" data-tauri-drag-region>
           <div className="flex items-center gap-2" data-tauri-drag-region>
@@ -1081,6 +1209,147 @@ export default function DebugWindow({ onClose, standalone = false }: DebugWindow
 
             {activeTab === "debug-tools" && (
               <div className="flex-1 overflow-auto p-6 space-y-6">
+                <div className="bg-white border border-gray-200 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                    <RotateCw size={18} />
+                    Runtime Controls
+                  </h3>
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      onClick={handleRestartFrontend}
+                      disabled={runtimeAction !== null}
+                      className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      {runtimeAction === "frontend" ? (
+                        <Loader className="animate-spin" size={16} />
+                      ) : (
+                        <RotateCw size={16} />
+                      )}
+                      {runtimeAction === "frontend" ? "Reloading Frontend..." : "Reload Main Frontend"}
+                    </button>
+                    <button
+                      onClick={handleRestartBackend}
+                      disabled={runtimeAction !== null}
+                      className="px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      {runtimeAction === "backend" ? (
+                        <Loader className="animate-spin" size={16} />
+                      ) : (
+                        <Server size={16} />
+                      )}
+                      {runtimeAction === "backend" ? "Restarting Go Service..." : "Restart Go Service"}
+                    </button>
+                    <button
+                      onClick={handleRestartProgram}
+                      disabled={runtimeAction !== null}
+                      className="px-4 py-2 bg-red-700 text-white rounded-lg hover:bg-red-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      {runtimeAction === "program" ? (
+                        <Loader className="animate-spin" size={16} />
+                      ) : (
+                        <Power size={16} />
+                      )}
+                      {runtimeAction === "program" ? "Restarting iPAGet..." : "Restart Entire App"}
+                    </button>
+                  </div>
+                  <p className="mt-3 text-xs text-gray-500">
+                    Frontend reload keeps this debug window open. Go restart interrupts active requests. A full restart closes all windows and cold-starts the app, including the Go service.
+                  </p>
+                  {runtimeActionMessage && (
+                    <p
+                      role="status"
+                      className={`mt-3 text-sm ${
+                        runtimeActionMessage.type === "error"
+                          ? "text-red-600"
+                          : runtimeActionMessage.type === "success"
+                          ? "text-green-700"
+                          : "text-blue-700"
+                      }`}
+                    >
+                      {runtimeActionMessage.text}
+                    </p>
+                  )}
+                </div>
+
+                <div className="bg-white border border-gray-200 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                    <KeyRound size={18} />
+                    Sign-in Sessions
+                  </h3>
+                  <p className="text-sm text-gray-600 mb-3">
+                    What is stored locally for each account. A store session is what avoids signing in at all; a saved password only lets the app retry the sign-in silently, and Apple decides whether a code is required.
+                  </p>
+
+                  {signedInAccounts.length === 0 ? (
+                    <p className="text-sm text-gray-500">No saved accounts yet.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {signedInAccounts.map((account) => {
+                        const state = sessionStates[account.email];
+                        const hint = state?.has_app_store_session
+                          ? "A store session is stored, so store actions normally run without signing in; an expired session can still require verification."
+                          : state?.has_stored_password
+                            ? "No usable store session. The saved password lets the app retry the sign-in silently; Apple decides whether a code is required."
+                            : "No reusable sign-in data. The next sign-in needs the password and may require a code.";
+                        const chips = [
+                          { label: "Store session", saved: Boolean(state?.has_app_store_session) },
+                          { label: "Saved password", saved: Boolean(state?.has_stored_password) },
+                          { label: "Developer credentials", saved: Boolean(state?.has_gsa_credentials) },
+                        ];
+
+                        return (
+                          <div
+                            key={account.email}
+                            className="flex items-center justify-between gap-4 border border-gray-200 rounded-lg p-3"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-gray-900 truncate">{account.email}</span>
+                                {activeAccount?.email === account.email && (
+                                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary-100 text-primary-700 whitespace-nowrap">
+                                    in use
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex flex-wrap gap-2 mt-2">
+                                {chips.map((chip) => (
+                                  <span
+                                    key={chip.label}
+                                    className={`text-[11px] px-2 py-0.5 rounded-full border ${
+                                      chip.saved
+                                        ? "bg-green-50 border-green-200 text-green-700"
+                                        : "bg-gray-50 border-gray-200 text-gray-500"
+                                    }`}
+                                  >
+                                    {chip.label}: {chip.saved ? "stored" : "not stored"}
+                                  </span>
+                                ))}
+                              </div>
+
+                              <p className="text-xs text-gray-500 mt-2">{hint}</p>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => setPendingClearEmail(account.email)}
+                              disabled={clearingSessionEmail === account.email || !state?.has_account}
+                              className="px-3 py-2 bg-white border border-gray-300 text-gray-700 text-sm rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 flex-shrink-0"
+                            >
+                              {clearingSessionEmail === account.email ? (
+                                <Loader className="animate-spin" size={16} />
+                              ) : (
+                                <Trash2 size={16} />
+                              )}
+                              Clear
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
                 <div className="bg-white border border-gray-200 rounded-lg p-4">
                   <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
                     <FolderOpen size={18} />
@@ -1471,6 +1740,22 @@ export default function DebugWindow({ onClose, standalone = false }: DebugWindow
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        isOpen={pendingClearEmail !== null}
+        title="Clear sign-in data"
+        message={`This clears the store session, saved password and developer credentials stored on this computer for ${pendingClearEmail ?? ""}. The account stays in the list, but using it again requires signing in and may require a code.`}
+        confirmText="Clear"
+        cancelText="Cancel"
+        onConfirm={() => {
+          if (pendingClearEmail) {
+            void handleClearSession(pendingClearEmail);
+          }
+        }}
+        onCancel={() => setPendingClearEmail(null)}
+        type="danger"
+      />
+    </>
   );
 
   if (standalone) {

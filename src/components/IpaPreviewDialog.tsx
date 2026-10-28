@@ -1,4 +1,5 @@
 import { useState, useEffect, Fragment } from "react";
+import { useNavigate } from "react-router-dom";
 import { X, Package, Loader2, ShieldCheck, AlertCircle, Check, ChevronDown, Smartphone } from "lucide-react";
 import { Dialog, Transition, Listbox } from "@headlessui/react";
 import { useTranslation } from "react-i18next";
@@ -18,6 +19,8 @@ interface IpaInfo {
   filePath: string;
   fileSize: number;
   minimumOSVersion?: string;
+  certificateStatus?: string;
+  signerName?: string;
 }
 
 interface IpaPreviewDialogProps {
@@ -40,6 +43,7 @@ export default function IpaPreviewDialog({
   onInstall,
 }: IpaPreviewDialogProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { certificates, loadCertificates } = useCertificateStore();
   const { connectedDevices } = useDeviceStore();
   const [displayFilePath, setDisplayFilePath] = useState<string | null>(null);
@@ -79,6 +83,8 @@ export default function IpaPreviewDialog({
           filePath: displayFilePath,
           fileSize: stats.size || 0,
           minimumOSVersion: parsedInfo.minimum_os_version,
+          certificateStatus: parsedInfo.certificate_status,
+          signerName: parsedInfo.signer_name,
         });
       } catch (err: any) {
         console.error("Failed to parse IPA:", err);
@@ -130,6 +136,25 @@ export default function IpaPreviewDialog({
     if (gb >= 1) return `${gb.toFixed(2)} GB`;
     return `${mb.toFixed(2)} MB`;
   };
+
+  const originalSignature = (() => {
+    const status = (ipaInfo?.certificateStatus || "").trim();
+    const labels: Record<string, string> = {
+      "App Store": t("signatureStatus.official"),
+      Enterprise: t("signatureStatus.enterprise"),
+      Developer: t("signatureStatus.developer"),
+      "Ad-Hoc": t("signatureStatus.adHoc"),
+    };
+    // "Unknown" means no usable signature could be read, so report it as unsigned.
+    const label = labels[status] || t("signatureStatus.unsigned");
+    const signer = (ipaInfo?.signerName || "").trim();
+    return signer ? `${label}\uff1a${signer}` : label;
+  })();
+
+  const originalSignatureIsUnsigned = (() => {
+    const status = (ipaInfo?.certificateStatus || "").trim();
+    return status === "" || status === "Unknown" || status === "Unsigned";
+  })();
 
   return (
     <Transition
@@ -236,7 +261,13 @@ export default function IpaPreviewDialog({
                                   return (
                                     <span className="flex items-center">
                                       <ShieldCheck size={18} className="text-gray-400 mr-2" />
-                                      <span className="text-sm text-gray-700">{t("ipaPreview.noResign")}</span>
+                                      <div className="min-w-0 flex-1">
+                                        <p className="text-sm text-gray-700">{t("ipaPreview.noResign")}</p>
+                                        <p className="truncate text-xs text-gray-400">{originalSignature}</p>
+                                        {originalSignatureIsUnsigned && (
+                                          <p className="truncate text-xs text-amber-600">{t("ipaPreview.unsignedWarning")}</p>
+                                        )}
+                                      </div>
                                     </span>
                                   );
                                 }
@@ -254,7 +285,14 @@ export default function IpaPreviewDialog({
                                         }`}
                                       />
                                       <div className="flex-1 min-w-0">
-                                        <p className="text-sm font-medium text-gray-900 truncate">{cert.name}</p>
+                                        <p className="flex items-center gap-1.5 text-sm font-medium text-gray-900">
+                                          <span className="truncate">{cert.name}</span>
+                                          {cert.type === "free_sign" && (
+                                            <span className="shrink-0 self-center rounded-full bg-blue-50 px-1.5 py-[1px] text-[10px] font-semibold leading-none text-blue-700 ring-1 ring-inset ring-blue-200">
+                                              {t("signing.selfSignedBadge")}
+                                            </span>
+                                          )}
+                                        </p>
                                         <p className="text-xs text-gray-500 truncate">{cert.common_name}</p>
                                       </div>
                                     </span>
@@ -285,9 +323,15 @@ export default function IpaPreviewDialog({
                                     <>
                                       <div className="flex items-center">
                                         <ShieldCheck size={18} className="text-gray-400 mr-2" />
-                                        <span className={`block truncate ${selected ? 'font-medium' : 'font-normal'}`}>
-                                          {t("ipaPreview.noResign")}
-                                        </span>
+                                        <div className="min-w-0 flex-1">
+                                          <p className={`truncate ${selected ? 'font-medium' : 'font-normal'}`}>
+                                            {t("ipaPreview.noResign")}
+                                          </p>
+                                          <p className="truncate text-xs text-gray-400">{originalSignature}</p>
+                                          {originalSignatureIsUnsigned && (
+                                            <p className="truncate text-xs text-amber-600">{t("ipaPreview.unsignedWarning")}</p>
+                                          )}
+                                        </div>
                                       </div>
                                       {selected && (
                                         <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-primary-600">
@@ -322,8 +366,13 @@ export default function IpaPreviewDialog({
                                             }`}
                                           />
                                           <div className="flex-1 min-w-0">
-                                            <p className={`text-sm truncate ${selected ? 'font-medium' : 'font-normal'}`}>
-                                              {cert.name}
+                                            <p className={`flex items-center gap-1.5 text-sm ${selected ? 'font-medium' : 'font-normal'}`}>
+                                              <span className="truncate">{cert.name}</span>
+                                              {cert.type === "free_sign" && (
+                                                <span className="shrink-0 self-center rounded-full bg-blue-50 px-1.5 py-[1px] text-[10px] font-semibold leading-none text-blue-700 ring-1 ring-inset ring-blue-200">
+                                                  {t("signing.selfSignedBadge")}
+                                                </span>
+                                              )}
                                             </p>
                                             <p className="text-xs text-gray-500 truncate">{cert.common_name}</p>
                                             <p className="text-xs text-gray-400">
@@ -459,12 +508,13 @@ export default function IpaPreviewDialog({
                         <div className="w-px h-8 bg-gray-300"></div>
                         <button
                           onClick={() => {
-                            setDetailsDialogView("plugins");
-                            setShowDetailsDialog(true);
+                            if (!displayFilePath) return;
+                            navigate("/editor", { state: { ipaPath: displayFilePath } });
+                            onClose();
                           }}
                           className="flex-1 px-4 py-2 text-gray-700 hover:bg-gray-50 transition-colors text-sm"
                         >
-                          {t("ipaDetails.tabs.plugins")}
+                          {t("common.edit")}
                         </button>
                         <div className="w-px h-8 bg-gray-300"></div>
                         <button

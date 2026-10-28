@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { PlistNode, PlistParseResult } from "./plistTypes";
 
 export class TokenExpiredError extends Error {
   constructor(message: string = "password token expired") {
@@ -8,6 +9,7 @@ export class TokenExpiredError extends Error {
 }
 
 let serviceUrl: string | null = null;
+const AUTH_REQUEST_TIMEOUT_MS = 75000;
 
 // Error message to i18n key mapping
 const ERROR_MESSAGE_TO_KEY: Record<string, string> = {
@@ -95,6 +97,7 @@ export interface DeviceInfo {
   is_jailbroken: boolean; // Jailbreak status
   connection_type?: "usb" | "network" | "unknown" | string; // How the device is linked to this PC
   wifi_debugging_enabled: boolean;
+  wireless_technology?: string; // Active radio tech (e.g. kCTWirelessTechnologyLTE)
   cpu_architecture: string; // CPU type
   disk_type?: string; // Storage type
   battery_level: number; // Battery percentage
@@ -174,6 +177,8 @@ export interface AppInfo {
   icon_data?: string;
   auth_type: string; // apple_store, shared, development, unknown, system
   purchaser_apple_id?: string;
+  store_version_id?: string; // External version identifier of the installed build
+  store_item_id?: number; // Catalog item id, the only handle for delisted apps
   is_shared_library?: boolean;
   shared_group_id?: string;
   shared_by_bundle_ids?: string[];
@@ -247,10 +252,15 @@ export interface ImportFreeSignRequest {
 
 export interface SignIPARequest {
   ipa_path: string;
-  certificate_id: string;
+  /** Required when sign_mode is "certificate" (default). */
+  certificate_id?: string;
   device_udid?: string;
   output_dir?: string;
   bundle_id?: string;
+  /** "certificate" (default) or "adhoc" for editor export without developer cert. */
+  sign_mode?: "certificate" | "adhoc";
+  editor_options?: SigningOptions;
+  icon_path?: string;
 }
 
 export interface DeviceAttachedEvent {
@@ -289,6 +299,7 @@ export interface AuthResponse {
   cookie_file?: string;
   message: string;
   error_code?: string;
+  app_store_session_error?: string;
 }
 
 export type AppStoreType = "iphone" | "ipad";
@@ -351,6 +362,19 @@ export interface AccountInfo {
   storefront: string;
 }
 
+// Local sign-in material for an account, used by the settings page to show
+// whether the app can reuse a saved session without asking for a code again.
+export interface LoginSessionState {
+  email: string;
+  has_account: boolean;
+  has_app_store_session: boolean;
+  has_stored_password: boolean;
+  has_gsa_credentials: boolean;
+  has_anisette: boolean;
+  has_device_metadata: boolean;
+  storefront?: string;
+}
+
 export interface IPAInfo {
   name: string;
   bundle_id: string;
@@ -358,6 +382,7 @@ export interface IPAInfo {
   minimum_os_version?: string;
   icon_base64?: string;
   file_path: string;
+  file_size?: number;
   certificate_name?: string;
   certificate_expiry?: string;
   certificate_status?: string;
@@ -411,6 +436,7 @@ export interface IPADetails {
   frameworks: FrameworkItem[]; // All frameworks from .app/Frameworks/
   plugins: PluginItem[];    // All plugins from .app/PlugIns/
   properties: Record<string, any>;
+  icon_base64?: string;    // largest app icon, standard PNG, base64
 }
 
 export type InjectPath = "@executable_path" | "@rpath";
@@ -421,21 +447,63 @@ export interface SigningOptions {
   app_name?: string;
   app_version?: string;
   app_identifier?: string;
-  
+  app_build_version?: string;
+  minimum_os_version?: string;
+  appearance?: string;
+
   // Injection Options
-  inject_path: InjectPath;      // @executable_path or @rpath
-  inject_folder: InjectFolder;  // root (/) or frameworks (/Frameworks/)
-  
+  inject_path?: InjectPath;      // @executable_path or @rpath
+  inject_folder?: InjectFolder;  // root (/) or frameworks (/Frameworks/)
+
   // File Lists
   injection_files: string[];      // Array of files (.dylib, .deb) to extract and inject
   dis_injection_files: string[];  // Mach-O load paths to remove
   remove_files: string[];         // App files to remove
-  
-  // Options
+
+  // Common capabilities
   file_sharing: boolean;       // Enable UISupportsDocumentBrowser
   itunes_file_sharing: boolean; // Enable UIFileSharingEnabled
   remove_url_scheme: boolean;  // Remove CFBundleURLTypes
   remove_provisioning: boolean; // Remove embedded.mobileprovision
+
+  // Display & status bar
+  status_bar_hidden: boolean;
+  view_controller_based_status_bar: boolean;
+  prerendered_icon: boolean;
+
+  // Network & behavior
+  requires_persistent_wifi: boolean;
+  exits_on_suspend: boolean;
+  allows_arbitrary_loads: boolean;
+  no_encryption_decl: boolean;
+
+  // Interface orientations
+  orientation_portrait: boolean;
+  orientation_landscape_left: boolean;
+  orientation_landscape_right: boolean;
+  orientation_portrait_upside_down: boolean;
+
+  // Background modes
+  bg_audio: boolean;
+  bg_location: boolean;
+  bg_fetch: boolean;
+  bg_voip: boolean;
+
+  // Advanced parameters
+  required_device_capabilities?: string;
+  remove_supported_devices: boolean;
+  bundle_localizations?: string;
+  development_region?: string;
+  application_category_type?: string;
+  supports_multiple_scenes?: boolean | null;
+  custom_url_scheme?: string;
+  remove_document_types: boolean;
+  remove_exported_type_declarations: boolean;
+  remove_application_queries_schemes: boolean;
+  privacy_overrides?: Record<string, string>;
+  remove_launch_screen: boolean;
+  remove_watch_app: boolean;
+  remove_plug_ins: boolean;
 }
 
 export interface SimulatedDeviceProfile {
@@ -569,15 +637,26 @@ export class GoServiceClient {
     }
   }
 
-  async getFullDeviceInfo(udid: string): Promise<Record<string, any>> {
+  async getFullDeviceInfo(udid: string, complete: boolean = false): Promise<Record<string, any>> {
     await this.init();
-    const response = await fetch(`${this.baseUrl}/device/${encodeURIComponent(udid)}/device-info`);
+    const query = complete ? "?full=1" : "";
+    const response = await fetch(`${this.baseUrl}/device/${encodeURIComponent(udid)}/device-info${query}`);
     const payload = await response.json();
     const result = typeof payload === "string" ? JSON.parse(payload) : payload;
     if (!response.ok) {
       throw new Error(result.error || "Failed to get full device info");
     }
     return result.data || {};
+  }
+
+  async getStorageInfo(udid: string): Promise<StorageInfo> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/device/${encodeURIComponent(udid)}/storage`);
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Failed to get storage information");
+    }
+    return payload.data;
   }
 
   async listConnectedDeviceUDIDs(): Promise<string[]> {
@@ -676,6 +755,90 @@ export class GoServiceClient {
     }
     const result = await response.json();
     return result.data;
+  }
+
+  async parsePlist(input: { path?: string; dataBase64?: string }): Promise<PlistParseResult> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/plist/parse`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        path: input.path,
+        data_base64: input.dataBase64,
+      }),
+    });
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to parse plist");
+      throw new Error("Unreachable");
+    }
+
+    const result = await response.json();
+    return result.data as PlistParseResult;
+  }
+
+  async writePlist(input: {
+    path: string;
+    root: PlistNode;
+    format?: "preserve" | "xml" | "binary" | string;
+  }): Promise<void> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/plist/write`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        path: input.path,
+        root: input.root,
+        format: input.format || "preserve",
+      }),
+    });
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to write plist");
+      throw new Error("Unreachable");
+    }
+  }
+
+  async renderPlistXML(root: PlistNode): Promise<string> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/plist/render-xml`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ root }),
+    });
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to render plist XML");
+      throw new Error("Unreachable");
+    }
+
+    const result = await response.json();
+    return String(result.data?.xml_preview || "");
+  }
+
+  async parsePlistXml(xml: string): Promise<PlistParseResult> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/plist/parse-xml`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ xml }),
+    });
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to parse plist XML");
+      throw new Error("Unreachable");
+    }
+
+    const result = await response.json();
+    return result.data as PlistParseResult;
   }
 
   async launchApp(udid: string, bundleId: string): Promise<void> {
@@ -934,7 +1097,7 @@ export class GoServiceClient {
     }
   }
 
-  async login(email: string, password: string): Promise<AuthResponse> {
+  async login(email: string, password: string, purpose: "download" | "certificate" | "purchaser" = "download"): Promise<AuthResponse> {
     await this.init();
     const settings = await invoke<any>("get_settings");
     const anisetteUrl = settings.anisette_url || "";
@@ -945,7 +1108,8 @@ export class GoServiceClient {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ email, password, anisette_url: anisetteUrl }),
+      body: JSON.stringify({ email, password, anisette_url: anisetteUrl, for_signing: purpose === "certificate" }),
+      signal: AbortSignal.timeout(AUTH_REQUEST_TIMEOUT_MS),
     });
     
     if (!response.ok) {
@@ -969,6 +1133,7 @@ export class GoServiceClient {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ email, password, code }),
+      signal: AbortSignal.timeout(AUTH_REQUEST_TIMEOUT_MS),
     });
     
     if (!response.ok) {
@@ -1022,6 +1187,37 @@ export class GoServiceClient {
     
     const result = await response.json();
     return result.data;
+  }
+
+  async getLoginSessionState(email: string): Promise<LoginSessionState> {
+    await this.init();
+    const response = await fetch(
+      `${this.baseUrl}/auth/session?email=${encodeURIComponent(email)}`
+    );
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to get sign-in session state");
+      throw new Error("Unreachable");
+    }
+
+    const result = await response.json();
+    return result.data;
+  }
+
+  async clearLoginSession(email: string): Promise<void> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/auth/session/clear`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ email }),
+    });
+
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to clear the saved sign-in session");
+      throw new Error("Unreachable");
+    }
   }
 
   async getCountryCode(email: string): Promise<string> {
@@ -1122,12 +1318,15 @@ export class GoServiceClient {
     return result.data.subtitles || {};
   }
 
-  async getAppVersionHistory(bundleId: string, email: string): Promise<{ task_id: string }> {
+  async getAppVersionHistory(bundleId: string, email: string, forceRefresh = false): Promise<{ task_id: string }> {
     await this.init();
     const params = new URLSearchParams({
       bundle_id: bundleId,
       email,
     });
+    if (forceRefresh) {
+      params.set("refresh", "true");
+    }
     
     const response = await fetch(`${this.baseUrl}/apps/versions?${params}`);
     
@@ -1172,30 +1371,45 @@ export class GoServiceClient {
     email: string,
     outputDir: string,
     appName?: string,
-    iconUrl?: string
+    iconUrl?: string,
+    options?: { externalVersionId?: string; storeItemId?: number }
   ): Promise<{ task_id: string }> {
     await this.init();
-    const response = await fetch(`${this.baseUrl}/apps/download`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        bundle_id: bundleId,
-        email,
-        output_dir: outputDir,
-        app_name: appName,
-        icon_url: iconUrl,
-      }),
-    });
-    
-    if (!response.ok) {
-      await this.handleErrorResponse(response, "Download failed");
-      throw new Error("Unreachable");
+    const controller = new AbortController();
+    const timeoutTimer = window.setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(`${this.baseUrl}/apps/download`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          bundle_id: bundleId,
+          email,
+          output_dir: outputDir,
+          app_name: appName,
+          icon_url: iconUrl,
+          external_version_id: options?.externalVersionId,
+          store_item_id: options?.storeItemId,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        await this.handleErrorResponse(response, "Download failed");
+        throw new Error("Unreachable");
+      }
+
+      const result = await response.json();
+      return result.data;
+    } catch (err: any) {
+      if (err && err.name === "AbortError") {
+        throw new Error("Download request timed out");
+      }
+      throw err;
+    } finally {
+      window.clearTimeout(timeoutTimer);
     }
-    
-    const result = await response.json();
-    return result.data;
   }
 
   async cancelTask(taskId: string): Promise<void> {
@@ -1208,6 +1422,18 @@ export class GoServiceClient {
       await this.handleErrorResponse(response, "Failed to cancel task");
       throw new Error("Unreachable");
     }
+  }
+
+  async getTaskStatus(taskId: string): Promise<TaskProgressEvent> {
+    await this.init();
+    const response = await fetch(`${this.baseUrl}/tasks/${encodeURIComponent(taskId)}`);
+    if (!response.ok) {
+      await this.handleErrorResponse(response, "Failed to get task status");
+      throw new Error("Unreachable");
+    }
+
+    const result = await response.json();
+    return result.data;
   }
 
   async checkPairingStatus(udid: string): Promise<{ is_paired: boolean; waiting_for_trust: boolean; needs_pairing: boolean }> {
@@ -1562,6 +1788,9 @@ export class GoServiceClient {
   async getCertificateForAppleID(email: string): Promise<Certificate | null> {
     await this.init();
     const response = await fetch(`${this.baseUrl}/certs/apple-id/${encodeURIComponent(email)}`);
+    if (response.status === 404) {
+      return null;
+    }
     if (!response.ok) {
       await this.handleErrorResponse(response, "Failed to get certificate for Apple ID");
       throw new Error("Unreachable");

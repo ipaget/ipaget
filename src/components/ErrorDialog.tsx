@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { useErrorStore } from "../store/errorStore";
 import { useTranslation } from "react-i18next";
 import { relaunch } from "@tauri-apps/plugin-process";
+import CopyButton from "./CopyButton";
 
 export default function ErrorDialog() {
   const { t } = useTranslation();
@@ -56,7 +57,10 @@ export default function ErrorDialog() {
               <X size={20} />
             </button>
           </div>
-          <p className="text-gray-600 mb-6 ml-13 whitespace-pre-line break-words overflow-wrap-anywhere max-w-full">{message}</p>
+          <div className="flex items-start gap-2 mb-6 ml-[52px] min-w-0">
+            <p className="min-w-0 flex-1 whitespace-pre-line break-words [overflow-wrap:anywhere] text-gray-600">{message}</p>
+            <CopyButton text={message} size={18} className="text-gray-400 hover:text-primary-600" />
+          </div>
           <div className="flex justify-end gap-2">
             {showRestartButton && (
               <button

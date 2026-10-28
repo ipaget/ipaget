@@ -2,9 +2,10 @@ import { useTranslation } from "react-i18next";
 
 interface PropertiesViewProps {
   properties: Record<string, any>;
+  query?: string;
 }
 
-export default function PropertiesView({ properties }: PropertiesViewProps) {
+export default function PropertiesView({ properties, query = "" }: PropertiesViewProps) {
   const { t } = useTranslation();
 
   const renderValue = (value: any): string => {
@@ -55,9 +56,29 @@ export default function PropertiesView({ properties }: PropertiesViewProps) {
 
   const allEntries = [...importantEntries, ...otherEntries];
 
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleEntries = normalizedQuery
+    ? allEntries.filter(([key, value]) => {
+        const label = keyTranslations[key] || key;
+        return (
+          label.toLowerCase().includes(normalizedQuery) ||
+          key.toLowerCase().includes(normalizedQuery) ||
+          renderValue(value).toLowerCase().includes(normalizedQuery)
+        );
+      })
+    : allEntries;
+
+  if (visibleEntries.length === 0) {
+    return (
+      <div className="text-center py-8">
+        <p className="text-gray-500">{t("ipaDetails.properties.noResults")}</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-1 max-h-[400px] overflow-y-auto scrollbar-thin">
-      {allEntries.map(([key, value]) => (
+      {visibleEntries.map(([key, value]) => (
         <div
           key={key}
           className="grid grid-cols-[200px_1fr] gap-4 py-2 border-b border-gray-100 last:border-0 min-w-0"

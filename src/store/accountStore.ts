@@ -10,7 +10,7 @@ export interface Account {
   last_login?: string;
 }
 
-export type LoginDialogContext = "download" | "certificate";
+export type LoginDialogContext = "download" | "certificate" | "purchaser";
 
 interface AccountState {
   accounts: Account[];
@@ -28,7 +28,7 @@ interface AccountState {
   setShowLoginDialog: (show: boolean, prefillEmail?: string, context?: LoginDialogContext) => void;
   logout: () => void;
   requireAuth: () => Promise<boolean>;
-  requireRelogin: () => void;
+  requireRelogin: (email?: string) => void;
 }
 
 export function handleTokenExpired() {
@@ -141,12 +141,12 @@ export const useAccountStore = createWithEqualityFn<AccountState>((set, get) => 
     return false;
   },
 
-  requireRelogin: () => {
+  requireRelogin: (email?: string) => {
     const state = get();
-    const email = state.selectedAccount?.email || null;
+    const prefillEmail = email || state.selectedAccount?.email || null;
     set({ 
       showLoginDialog: true,
-      loginDialogPrefillEmail: email,
+      loginDialogPrefillEmail: prefillEmail,
       loginDialogContext: "download",
     });
   },

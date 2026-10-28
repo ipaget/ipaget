@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { Dialog, Listbox, Transition } from "@headlessui/react";
 import { Check, ChevronDown, Loader2, ShieldCheck, Smartphone, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { parseIPA, goServiceClient } from "../lib/goService";
+import { parseIPA, goServiceClient, type SigningOptions } from "../lib/goService";
 import { useCertificateStore } from "../store/certificateStore";
 import { useDeviceStore } from "../store/deviceStore";
 import { useErrorStore } from "../store/errorStore";
@@ -14,6 +14,10 @@ interface IpaSignDialogProps {
   filePath: string | null;
   onClose: () => void;
   onSigned: () => Promise<void> | void;
+  /** When opened from Editor, apply these edits during certificate signing. */
+  editorOptions?: SigningOptions | null;
+  iconPath?: string | null;
+  applyEditsHint?: string | null;
 }
 
 interface ParsedIpaSummary {
@@ -31,7 +35,7 @@ const isSimulatedDevice = (device: {
   device.activation_state === "Simulated" ||
   device.raw_data?.simulated === true;
 
-export default function IpaSignDialog({ filePath, onClose, onSigned }: IpaSignDialogProps) {
+export default function IpaSignDialog({ filePath, onClose, onSigned, editorOptions, iconPath, applyEditsHint }: IpaSignDialogProps) {
   const { t } = useTranslation();
   const { certificates, loadCertificates } = useCertificateStore();
   const { connectedDevices } = useDeviceStore();
@@ -125,6 +129,9 @@ export default function IpaSignDialog({ filePath, onClose, onSigned }: IpaSignDi
         certificate_id: selectedCertificateId,
         device_udid: requiresDevice ? selectedDeviceUdid : undefined,
         bundle_id: ipaInfo?.bundleId,
+        sign_mode: "certificate",
+        editor_options: editorOptions || undefined,
+        icon_path: iconPath || undefined,
       });
       showToast(t("library.signStarted"), "info");
       await onSigned();
@@ -207,6 +214,12 @@ export default function IpaSignDialog({ filePath, onClose, onSigned }: IpaSignDi
                           <p className="truncate text-sm text-gray-500">{ipaInfo.bundleId}</p>
                           <p className="text-xs text-gray-400">{t("common.version")}: {ipaInfo.version || "-"}</p>
                         </div>
+                      </div>
+                    )}
+
+                    {applyEditsHint && (
+                      <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                        {applyEditsHint}
                       </div>
                     )}
 

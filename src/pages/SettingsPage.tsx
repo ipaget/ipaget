@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Globe, Languages, Network, HelpCircle, Terminal } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useSettingsStore } from "../store/settingsStore";
+import { DEFAULT_ANISETTE_URL, useSettingsStore } from "../store/settingsStore";
 import { useToastStore } from "../store/toastStore";
 import { useErrorStore } from "../store/errorStore";
 import CustomSelect, { SelectOption } from "../components/CustomSelect";
@@ -55,19 +55,21 @@ export default function SettingsPage() {
   ];
 
   const currentLanguage = i18n.language.startsWith('zh') ? 'zh' : 'en';
-  const [anisetteUrl, setAnisetteUrl] = useState("");
+  const [anisetteUrl, setAnisetteUrl] = useState(DEFAULT_ANISETTE_URL);
   const [proxyUrl, setProxyUrl] = useState("");
 
   useEffect(() => {
     if (isLoaded) {
-      setAnisetteUrl(settings.anisette_url || "");
+      setAnisetteUrl(settings.anisette_url || DEFAULT_ANISETTE_URL);
       setProxyUrl(settings.proxy_url || "");
     }
   }, [isLoaded, settings.anisette_url, settings.proxy_url]);
 
   const handleAnisetteSave = async () => {
     try {
-      await updateSettings({ anisette_url: anisetteUrl.trim() });
+      const value = anisetteUrl.trim() || DEFAULT_ANISETTE_URL;
+      setAnisetteUrl(value);
+      await updateSettings({ anisette_url: value });
       showToast(t('settings.anisetteSaved'), 'success');
     } catch (error: any) {
       console.error("Failed to save anisette setting:", error);

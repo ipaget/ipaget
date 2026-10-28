@@ -7,6 +7,8 @@ export interface AppSettings {
   proxy_url: string;
 }
 
+export const DEFAULT_ANISETTE_URL = "https://new.ani.sidestore.io";
+
 interface SettingsState {
   settings: AppSettings;
   isLoaded: boolean;
@@ -18,7 +20,7 @@ interface SettingsState {
 export const useSettingsStore = createWithEqualityFn<SettingsState>((set, get) => ({
   settings: {
     language: "en",
-    anisette_url: "",
+    anisette_url: DEFAULT_ANISETTE_URL,
     proxy_url: "",
   },
   isLoaded: false,

@@ -91,7 +91,7 @@ export default function Toast() {
         )}
         <div className="flex items-start space-x-3 px-4 py-3">
           <div className="flex-shrink-0 mt-0.5">{getIcon()}</div>
-          <p className="flex-1 text-sm text-gray-900 break-words overflow-wrap-anywhere">{message}</p>
+          <p className="flex-1 min-w-0 text-sm text-gray-900 break-words [overflow-wrap:anywhere]">{message}</p>
           <button
             onClick={handleClose}
             className="text-gray-400 hover:text-gray-600 transition-colors"

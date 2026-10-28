@@ -25,6 +25,7 @@ export default function CopyButton({ text, size = 14, className = "" }: CopyButt
 
   return (
     <button
+      type="button"
       onClick={handleCopy}
       className={`flex-shrink-0 p-1 text-gray-400 hover:text-primary-600 transition-all duration-200 ${className}`}
     >

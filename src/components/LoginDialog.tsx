@@ -7,15 +7,7 @@ import { useTranslation } from "react-i18next";
 import CodeInput from "./CodeInput";
 import { goServiceClient, getAuthErrorKey } from "../lib/goService";
 import { invoke } from "@tauri-apps/api/core";
-
-const CERTIFICATE_SYNC_TIMEOUT_MS = 15000;
-const CERTIFICATE_SYNC_INTERVAL_MS = 1000;
-
-function delay(ms: number) {
-  return new Promise<void>((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
+import CopyButton from "./CopyButton";
 
 export default function LoginDialog() {
   const { t } = useTranslation();
@@ -40,28 +32,30 @@ export default function LoginDialog() {
       return;
     }
 
-    const deadline = Date.now() + CERTIFICATE_SYNC_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      try {
-        const cert = await goServiceClient.getCertificateForAppleID(accountEmail);
-        if (cert) {
-          break;
-        }
-      } catch {
-      }
-
-      await delay(CERTIFICATE_SYNC_INTERVAL_MS);
-    }
-
     try {
+      const cert = await goServiceClient.getCertificateForAppleID(accountEmail);
+      if (!cert) {
+        await goServiceClient.importFreeSignCertificate({
+          name: `Free Sign (${accountEmail})`,
+          apple_id: accountEmail,
+          password: "",
+          is_default: true,
+        });
+      }
       const { loadCertificates } = useCertificateStore.getState();
       await loadCertificates();
     } catch (syncError) {
       console.error("Failed to refresh certificates after login:", syncError);
+      showError(t("signing.import.error"), syncError instanceof Error ? syncError.message : String(syncError));
     }
   };
 
   const finalizeAuthenticatedLogin = async (accountEmail: string) => {
+    if (loginDialogContext === "certificate") {
+      setShowLoginDialog(false);
+      void syncCertificatesAfterLogin(accountEmail);
+      return;
+    }
     const accountInfo = await goServiceClient.getAccountInfo(accountEmail);
     addOrUpdateAccount({ email: accountInfo.email, country: accountInfo.storefront });
     await invoke("save_account", {
@@ -95,19 +89,25 @@ export default function LoginDialog() {
     setError("");
 
     try {
-      const result = await goServiceClient.login(email, password);
+      const result = await goServiceClient.login(email, password, loginDialogContext);
 
       if (result.requires_2fa) {
         setNeeds2FA(true);
       } else if (result.success) {
+        if (result.app_store_session_error) {
+          showError(
+            t('auth.loginFailed'),
+            t('auth.appStoreSessionWarning', { reason: result.app_store_session_error }),
+          );
+        }
         await finalizeAuthenticatedLogin(email);
       } else {
-        showError(t('auth.loginFailed'), result.message);
+        setError(result.message);
       }
     } catch (err: any) {
       const errorKey = getAuthErrorKey(err.message || err.toString());
       const errorMessage = errorKey ? t(errorKey) : (err.message || err.toString());
-      showError(t('auth.loginFailed'), errorMessage);
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -160,7 +160,9 @@ export default function LoginDialog() {
         <div className="text-center mb-8">
           <h2 className="text-2xl font-bold text-gray-900 whitespace-pre-line">{dialogTitle}</h2>
           <p className="text-gray-500 mt-2">
-            {loginDialogPrefillEmail ? t('auth.sessionExpiredPrompt') : t('auth.signInPrompt')}
+            {loginDialogContext === "purchaser"
+              ? t('auth.purchaserAccountPrompt')
+              : loginDialogPrefillEmail ? t('auth.sessionExpiredPrompt') : t('auth.signInPrompt')}
           </p>
         </div>
 
@@ -198,7 +200,8 @@ export default function LoginDialog() {
             {error && (
               <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-start space-x-2">
                 <AlertCircle className="text-red-600 mt-0.5 flex-shrink-0" size={20} />
-                <p className="text-sm text-red-800">{error}</p>
+                <p className="text-sm text-red-800 flex-1 min-w-0 whitespace-pre-line break-words [overflow-wrap:anywhere]">{error}</p>
+                <CopyButton text={error} size={16} className="text-red-400 hover:text-red-700" />
               </div>
             )}
 
@@ -243,15 +246,16 @@ export default function LoginDialog() {
                   disabled={isLoading}
                 />
               </div>
-              <p className={`text-sm mt-4 text-center ${error ? 'text-red-600' : 'text-gray-700'}`}>
-                {t('auth.enterCode')}
+              <p className="text-sm mt-4 text-center text-gray-500">
+                {t('auth.codeStorageNote')}
               </p>
             </div>
 
             {error && (
               <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-start space-x-2">
                 <AlertCircle className="text-red-600 mt-0.5 flex-shrink-0" size={20} />
-                <p className="text-sm text-red-800">{error}</p>
+                <p className="text-sm text-red-800 flex-1 min-w-0 whitespace-pre-line break-words [overflow-wrap:anywhere]">{error}</p>
+                <CopyButton text={error} size={16} className="text-red-400 hover:text-red-700" />
               </div>
             )}
 
