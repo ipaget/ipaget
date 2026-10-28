@@ -11,6 +11,8 @@ export interface AppInfo {
   icon_data?: string;
   auth_type: string;
   purchaser_apple_id?: string;
+  store_version_id?: string;
+  store_item_id?: number;
   is_shared_library?: boolean;
   shared_group_id?: string;
   shared_by_bundle_ids?: string[];

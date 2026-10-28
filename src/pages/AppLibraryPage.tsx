@@ -1,9 +1,9 @@
 import React, { useState, useRef, useEffect } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import { Folder, FileArchive, RefreshCw, Loader2, ExternalLink, Check, Trash2, Upload, ShieldCheck } from "lucide-react";
+import { Folder, FileArchive, RefreshCw, Loader2, ExternalLink, Check, Trash2, Upload, FileEdit } from "lucide-react";
 import { useIpaStore, selectBySource, type IpaMeta } from "../store/ipaStore";
 import { DataTable, DataTableColumn } from "../components/DataTable";
 import { open as openShell } from "@tauri-apps/plugin-shell";
@@ -15,16 +15,27 @@ import { useMount, useUnmount, useMeasure, useDebounce, useTimeoutFn, useClickAw
 import { goServiceClient, TaskProgressEvent } from "../lib/goService";
 import InstallingAppsBlock from "../components/InstallingAppsBlock";
 import IpaPreviewDialog from "../components/IpaPreviewDialog";
-import IpaSignDialog from "../components/IpaSignDialog";
 import { useInstallStore } from "../store/installStore";
 import ConfirmDialog from "../components/ConfirmDialog";
 import Button3D from "../components/Button3D";
 import SignatureStatusBadge from "../components/SignatureStatusBadge";
 import { useDropZone } from "../hooks/useDropZone";
 
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** exponent).toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+}
+
+function formatSpeed(bytesPerSecond: number): string {
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
 export default function AppLibraryPage() {
   const { t } = useTranslation();
   const location = useLocation() as any;
+  const navigate = useNavigate();
   const [downloadDir, setDownloadDir] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const nativeMetas = useIpaStore(selectBySource("native"));
@@ -74,7 +85,6 @@ export default function AppLibraryPage() {
   }, [downloads, removeDownload]);
   const { startInstall } = useInstallStore();
   const [ipaPreviewPath, setIpaPreviewPath] = useState<string | null>(null);
-  const [ipaSignPath, setIpaSignPath] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshCompleted, setRefreshCompleted] = useState(false);
   const [selectedIpaIds, setSelectedIpaIds] = useState<Set<string>>(new Set());
@@ -534,9 +544,9 @@ export default function AppLibraryPage() {
     closeContextMenu();
   };
 
-  const handleContextMenuSign = () => {
+  const handleContextMenuEdit = () => {
     if (contextMenuPath) {
-      setIpaSignPath(contextMenuPath);
+      navigate("/editor", { state: { ipaPath: contextMenuPath } });
     }
     closeContextMenu();
   };
@@ -854,6 +864,17 @@ export default function AppLibraryPage() {
                   <h4 className="font-semibold text-gray-900 text-base truncate">
                     {download.appName}
                   </h4>
+                  <div className="flex items-center gap-3 mt-1 text-xs text-gray-600">
+                    <span className="font-medium">{Math.round(download.progress)}%</span>
+                    {download.totalBytes > 0 && (
+                      <span>
+                        {formatBytes(download.bytesDownloaded)} / {formatBytes(download.totalBytes)}
+                      </span>
+                    )}
+                    <span className="text-primary-700 font-medium">
+                      {download.speedBytesPerSecond > 0 ? formatSpeed(download.speedBytesPerSecond) : "--/s"}
+                    </span>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <Button3D
@@ -1065,12 +1086,6 @@ export default function AppLibraryPage() {
         onInstall={handleConfirmInstall}
       />
 
-      <IpaSignDialog
-        filePath={ipaSignPath}
-        onClose={() => setIpaSignPath(null)}
-        onSigned={() => undefined}
-      />
-
       {/* Batch Delete Confirm Dialog */}
       <ConfirmDialog
         isOpen={showBatchDeleteConfirm}
@@ -1104,11 +1119,11 @@ export default function AppLibraryPage() {
             </span>
           </button>
           <button
-            onClick={handleContextMenuSign}
+            onClick={handleContextMenuEdit}
             className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 transition-colors flex items-center space-x-2"
           >
-            <ShieldCheck size={14} />
-            <span>{t('library.actions.sign')}</span>
+            <FileEdit size={14} />
+            <span>{t('common.edit')}</span>
           </button>
           <button
             onClick={handleContextMenuShowInFolder}

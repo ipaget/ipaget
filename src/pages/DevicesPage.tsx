@@ -20,6 +20,7 @@ import {
   Info as InfoIcon,
   Usb,
   Wifi,
+  Download,
 } from "lucide-react";
 import { Menu, Transition } from "@headlessui/react";
 import { useTranslation } from "react-i18next";
@@ -33,6 +34,7 @@ import { DataTable, DataTableColumn } from "../components/DataTable";
 import {
   goServiceClient,
   DeviceInfo,
+  TokenExpiredError,
 } from "../lib/goService";
 import type { AppInfo } from "../store/deviceStore";
 import { getDeviceColorName } from "../lib/deviceColorMap";
@@ -45,11 +47,15 @@ import { useDropZone } from "../hooks/useDropZone";
 import { useInstallStore } from "../store/installStore";
 import PageLoading from "../components/PageLoading";
 import Button3D from "../components/Button3D";
+import { invoke } from "@tauri-apps/api/core";
+import { useAccountStore, handleTokenExpired } from "../store/accountStore";
+import { useDownloadStore } from "../store/downloadStore";
 
 export default function DevicesPage() {
   const { t } = useTranslation();
   const { showError } = useErrorStore();
   const { showToast } = useToastStore();
+  const startDownload = useDownloadStore((state) => state.startDownload);
   
   // Global device state from store
   const {
@@ -66,6 +72,11 @@ export default function DevicesPage() {
     getDeviceAppsCache,
     clearDeviceAppsCache,
   } = useDeviceStore();
+
+  const connectedDeviceUdids = useMemo(
+    () => connectedDevices.map((device) => device.udid),
+    [connectedDevices]
+  );
 
   // App-specific state (keep in component for UI only)
   const [deviceApps, setDeviceApps] = useState<AppInfo[]>([]);
@@ -93,8 +104,6 @@ export default function DevicesPage() {
   const [deviceImageLoaded, setDeviceImageLoaded] = useState<Record<string, boolean>>({});
   const [copiedDeviceName, setCopiedDeviceName] = useState(false);
   const [copiedDeviceInfo, setCopiedDeviceInfo] = useState(false);
-  const [hoveringDeviceName, setHoveringDeviceName] = useState(false);
-  const [hoveringDeviceInfo, setHoveringDeviceInfo] = useState(false);
   const deviceNameTimerRef = useRef<number | null>(null);
   const deviceInfoTimerRef = useRef<number | null>(null);
   const [disableTableAnimation, setDisableTableAnimation] = useState(false);
@@ -643,8 +652,6 @@ export default function DevicesPage() {
     setSelectedDevice(device);
     setCopiedDeviceName(false);
     setCopiedDeviceInfo(false);
-    setHoveringDeviceName(false);
-    setHoveringDeviceInfo(false);
     if (deviceNameTimerRef.current) {
       clearTimeout(deviceNameTimerRef.current);
       deviceNameTimerRef.current = null;
@@ -774,6 +781,107 @@ export default function DevicesPage() {
       handleCopyToClipboard(contextMenuApp.bundle_id);
     }
     closeContextMenu();
+  };
+
+  // Resolves with the purchaser account once it has been signed in. A cancelled
+  // sign-in simply never resolves, and the timeout keeps a later unrelated login
+  // from resuming a download the user already walked away from.
+  const waitForPurchaserAccount = (purchaser: string, timeoutMs = 300000) =>
+    new Promise<string | null>((resolve) => {
+      const normalized = purchaser.toLowerCase();
+      const findAccount = () =>
+        useAccountStore.getState().accounts.find(
+          (candidate) => candidate.email.toLowerCase() === normalized
+        );
+
+      const existing = findAccount();
+      if (existing) {
+        resolve(existing.email);
+        return;
+      }
+
+      let timer = 0;
+      const unsubscribe = useAccountStore.subscribe(() => {
+        const account = findAccount();
+        if (!account) return;
+        window.clearTimeout(timer);
+        unsubscribe();
+        resolve(account.email);
+      });
+      timer = window.setTimeout(() => {
+        unsubscribe();
+        resolve(null);
+      }, timeoutMs);
+    });
+
+  const handleContextMenuDownloadInstalled = async () => {
+    const app = contextMenuApp;
+    closeContextMenu();
+
+    if (!app?.store_version_id) {
+      showToast(t("devices.downloadInstalledVersionUnavailable"), "info");
+      return;
+    }
+
+    const accountState = useAccountStore.getState();
+
+    // The store only serves an owned app to the account that owns it, so make
+    // sure that account is the one signed in before contacting the store.
+    const purchaser = app.purchaser_apple_id?.trim();
+    if (purchaser) {
+      let accounts = accountState.accounts;
+      if (accounts.length === 0) {
+        await accountState.loadAccounts();
+        accounts = useAccountStore.getState().accounts;
+      }
+
+      let purchaserEmail = accounts.find(
+        (account) => account.email.toLowerCase() === purchaser.toLowerCase()
+      )?.email;
+
+      if (!purchaserEmail) {
+        useAccountStore.getState().setShowLoginDialog(true, purchaser, "purchaser");
+        showToast(t("devices.downloadNeedsPurchaserAccount", { email: purchaser }), "warning");
+        purchaserEmail = await waitForPurchaserAccount(purchaser) ?? undefined;
+        if (!purchaserEmail) {
+          return;
+        }
+      }
+
+      const selected = useAccountStore.getState().selectedAccount;
+      if (selected?.email.toLowerCase() !== purchaserEmail.toLowerCase()) {
+        const target = useAccountStore.getState().accounts.find(
+          (account) => account.email.toLowerCase() === purchaserEmail!.toLowerCase()
+        );
+        if (target) {
+          useAccountStore.getState().setSelectedAccount(target);
+          showToast(t("devices.switchedToPurchaserAccount", { email: target.email }), "info");
+        }
+      }
+    }
+
+    if (!await accountState.requireAuth()) {
+      return;
+    }
+    const email = useAccountStore.getState().selectedAccount!.email;
+
+    try {
+      const downloadDir = await invoke<string>("get_download_directory");
+      await startDownload(app.bundle_id, email, downloadDir, app.name, appIcons[app.bundle_id], {
+        externalVersionId: app.store_version_id,
+        storeItemId: app.store_item_id,
+      });
+      showToast(
+        t("devices.downloadInstalledVersionStarted", { name: app.name, version: app.version }),
+        "success"
+      );
+    } catch (error: any) {
+      if (error instanceof TokenExpiredError) {
+        handleTokenExpired();
+      } else {
+        showError(t("downloads.failed"), error?.toString?.() || String(error));
+      }
+    }
   };
 
   const formatSize = useCallback((bytes?: number): string => {
@@ -1167,6 +1275,11 @@ export default function DevicesPage() {
     <div className="h-full overflow-auto scrollbar-thin p-12">
       <div ref={dropZoneRef} className="max-w-7xl mx-auto relative">
       {connectedDevices.length === 0 ? (
+        isRefreshing ? (
+          <div className="flex items-center justify-center min-h-[calc(100vh-200px)]">
+            <PageLoading message={t("devices.loadingDevices")} />
+          </div>
+        ) : (
         <div className="flex items-center justify-center min-h-[calc(100vh-200px)]">
           <div className="text-center">
             <Smartphone className="mx-auto text-gray-300 mb-4" size={80} />
@@ -1199,6 +1312,7 @@ export default function DevicesPage() {
             </button>
           </div>
         </div>
+        )
       ) : (
         <>
           <div className="mb-8">
@@ -1270,80 +1384,46 @@ export default function DevicesPage() {
                       <div className="flex items-center mb-1">
                         <h3 
                           onClick={handleCopyDeviceName}
-                          onMouseEnter={() => setHoveringDeviceName(true)}
-                          onMouseLeave={() => setHoveringDeviceName(false)}
                           className={`font-semibold text-lg cursor-pointer transition-colors ${
-                            hoveringDeviceName || copiedDeviceName ? 'text-primary-600' : 'text-gray-900'
+                            copiedDeviceName ? 'text-primary-600' : 'text-gray-900 hover:text-primary-600'
                           }`}
                         >
-                          {selectedDevice.name}
+                          {copiedDeviceName ? t("common.copied") : selectedDevice.name}
                         </h3>
                         <div className="ml-2 flex-shrink-0">
                           {renderConnectionBadge(selectedDevice)}
-                        </div>
-                        <div className="relative ml-1.5 h-5 flex items-center min-w-[80px]">
-                          <div className={`absolute left-0 flex items-center gap-1 text-green-600 text-sm whitespace-nowrap transition-all duration-300 ${
-                            copiedDeviceName ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'
-                          }`}>
-                            <Check size={14} />
-                            <span>{t("common.copied")}</span>
-                          </div>
-                          <div className={`absolute left-0 transition-all duration-300 ${
-                            !copiedDeviceName && hoveringDeviceName ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'
-                          }`}>
-                            <Copy 
-                              size={14} 
-                              className="text-primary-600 cursor-pointer" 
-                              onClick={handleCopyDeviceName}
-                            />
-                          </div>
                         </div>
                       </div>
                       <div className="flex items-center">
                         <p 
                           onClick={handleCopyDeviceInfo}
-                          onMouseEnter={() => setHoveringDeviceInfo(true)}
-                          onMouseLeave={() => setHoveringDeviceInfo(false)}
                           className={`text-sm flex items-center space-x-2 cursor-pointer transition-colors ${
-                            hoveringDeviceInfo || copiedDeviceInfo ? 'text-primary-600' : 'text-gray-500'
+                            copiedDeviceInfo ? 'text-primary-600' : 'text-gray-500 hover:text-primary-600'
                           }`}
                         >
-                          <span>
-                            {getDeviceModelName(selectedDevice.product_type)}
-                            {(() => {
-                              const colorName = getDeviceColorName(selectedDevice.product_type, selectedDevice.color, selectedDevice.enclosure_color);
-                              return colorName ? ` ${colorName}` : '';
-                            })()}
-                          </span>
-                          {(() => {
-                            const storageCapacity = getStorageCapacity(selectedDevice);
-                            return storageCapacity ? (
-                              <>
-                                <span className={hoveringDeviceInfo || copiedDeviceInfo ? 'text-primary-400' : 'text-gray-400'}>|</span>
-                                <span>{storageCapacity}</span>
-                              </>
-                            ) : null;
-                          })()}
-                          <span className={hoveringDeviceInfo || copiedDeviceInfo ? 'text-primary-400' : 'text-gray-400'}>|</span>
-                          <span>iOS {selectedDevice.version}</span>
+                          {copiedDeviceInfo ? t("common.copied") : (
+                            <>
+                              <span>
+                                {getDeviceModelName(selectedDevice.product_type)}
+                                {(() => {
+                                  const colorName = getDeviceColorName(selectedDevice.product_type, selectedDevice.color, selectedDevice.enclosure_color);
+                                  return colorName ? ` ${colorName}` : '';
+                                })()}
+                              </span>
+                              {(() => {
+                                const storageCapacity = getStorageCapacity(selectedDevice);
+                                return storageCapacity ? (
+                                  <>
+                                    <span className="text-gray-400">|</span>
+                                    <span>{storageCapacity}</span>
+                                  </>
+                                ) : null;
+                              })()}
+                              <span className="text-gray-400">|</span>
+                              <span>iOS {selectedDevice.version}</span>
+                            </>
+                          )}
                         </p>
-                        <div className="relative ml-1.5 h-5 flex items-center min-w-[80px]">
-                          <div className={`absolute left-0 flex items-center gap-1 text-green-600 text-sm whitespace-nowrap transition-all duration-300 ${
-                            copiedDeviceInfo ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'
-                          }`}>
-                            <Check size={14} />
-                            <span>{t("common.copied")}</span>
-                          </div>
-                          <div className={`absolute left-0 transition-all duration-300 ${
-                            !copiedDeviceInfo && hoveringDeviceInfo ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'
-                          }`}>
-                            <Copy 
-                              size={14} 
-                              className="text-primary-600 cursor-pointer" 
-                              onClick={handleCopyDeviceInfo}
-                            />
-                          </div>
-                        </div>
                       </div>
                     </div>
                   </div>
@@ -1663,13 +1743,9 @@ export default function DevicesPage() {
       {/* Device Details Dialog */}
       <DeviceDetailsDialog
         device={showDeviceDetails ? selectedDevice : null}
+        connectedDeviceUdids={connectedDeviceUdids}
+        onRefresh={() => refreshDevices(true)}
         onClose={() => setShowDeviceDetails(false)}
-        onDeviceUpdated={(updatedDevice) => {
-          setConnectedDevices(
-            connectedDevices.map((device) => device.udid === updatedDevice.udid ? updatedDevice : device)
-          );
-          setSelectedDevice(updatedDevice);
-        }}
       />
 
       {/* Context Menu */}
@@ -1689,6 +1765,22 @@ export default function DevicesPage() {
             <Copy size={14} />
             <span>{t("devices.copyBundleId")}</span>
           </button>
+          {contextMenuApp.auth_type === "apple_store" && contextMenuApp.store_version_id && (
+            <>
+              <div className="border-t border-gray-200"></div>
+              <button
+                onClick={handleContextMenuDownloadInstalled}
+                className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 transition-colors flex items-center space-x-2"
+              >
+                <Download size={14} />
+                <span>
+                  {contextMenuApp.version
+                    ? t("devices.downloadInstalledVersionWithVersion", { version: contextMenuApp.version })
+                    : t("devices.downloadInstalledVersion")}
+                </span>
+              </button>
+            </>
+          )}
           <div className="border-t border-gray-200"></div>
           <button
             onClick={handleContextMenuUninstall}

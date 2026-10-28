@@ -512,7 +512,7 @@ export default function ActiveDownloadsPopup() {
                             <div className="text-xs text-gray-500">{t('common.bundleId')}</div>
                             {errorDetailsTask?.bundleId && <CopyButton text={errorDetailsTask.bundleId} />}
                           </div>
-                          <div className="text-sm text-gray-900 break-words overflow-wrap-anywhere">
+                          <div className="text-sm text-gray-900 break-words [overflow-wrap:anywhere]">
                             {errorDetailsTask?.bundleId || '-'}
                           </div>
                         </div>
@@ -521,7 +521,7 @@ export default function ActiveDownloadsPopup() {
                             <div className="text-xs text-gray-500">{t('common.taskId')}</div>
                             {errorDetailsTask?.id && <CopyButton text={errorDetailsTask.id} />}
                           </div>
-                          <div className="text-sm text-gray-900 break-words overflow-wrap-anywhere">
+                          <div className="text-sm text-gray-900 break-words [overflow-wrap:anywhere]">
                             {errorDetailsTask?.id || '-'}
                           </div>
                         </div>
@@ -532,7 +532,7 @@ export default function ActiveDownloadsPopup() {
                           <div className="text-xs text-gray-500">{t('downloads.errorMessage')}</div>
                           {errorDetailsTask?.error && <CopyButton text={errorDetailsTask.error} />}
                         </div>
-  <pre className="mt-2 text-[12px] leading-5 whitespace-pre-wrap break-words overflow-wrap-anywhere text-gray-900 bg-gray-50 border border-gray-100 rounded-lg p-3 max-h-[45vh] overflow-auto">
+  <pre className="mt-2 text-[12px] leading-5 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-gray-900 bg-gray-50 border border-gray-100 rounded-lg p-3 max-h-[45vh] overflow-auto">
                           {errorDetailsTask?.error || '-'}
                         </pre>
                       </div>

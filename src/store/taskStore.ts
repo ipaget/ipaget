@@ -38,6 +38,15 @@ export const useTaskStore = createWithEqualityFn<TaskState>((set, get) => ({
   addTask: (taskId, taskType, data) => {
     set((state) => {
       const newTasks = new Map(state.tasks);
+      const existingTask = newTasks.get(taskId);
+      if (existingTask) {
+        newTasks.set(taskId, {
+          ...existingTask,
+          data: { ...data, ...existingTask.data },
+        });
+        return { tasks: newTasks };
+      }
+
       newTasks.set(taskId, {
         id: taskId,
         type: taskType,

@@ -1,6 +1,9 @@
-import { Fragment, useState, useEffect } from "react";
+import { Fragment, useState, useEffect, useMemo, useRef } from "react";
 import { Dialog, Transition } from "@headlessui/react";
-import { X, ChevronRight, Battery, BatteryCharging, BatteryFull, BatteryMedium, BatteryLow, Wifi, Loader2 } from "lucide-react";
+import { Activity, Info, X, Smartphone, Loader2 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { useTranslation } from "react-i18next";
 import { DeviceInfo, goServiceClient } from "../lib/goService";
 import { getDeviceColorName } from "../lib/deviceColorMap";
@@ -12,15 +15,17 @@ import { getDeviceDisplay, getDeviceDiskType } from "../lib/deviceDisplayMap";
 import { useToastStore } from "../store/toastStore";
 import ConfirmDialog from "./ConfirmDialog";
 import DetailRow from "./DetailRow";
+import RawDataViewer from "./RawDataViewer";
 import Button3D from "./Button3D";
 
 interface DeviceDetailsDialogProps {
   device: DeviceInfo | null;
+  connectedDeviceUdids: string[];
   onClose: () => void;
-  onDeviceUpdated?: (device: DeviceInfo) => void;
+  onRefresh?: () => void | Promise<void>;
 }
 
-export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }: DeviceDetailsDialogProps) {
+export default function DeviceDetailsDialog({ device, connectedDeviceUdids, onClose, onRefresh }: DeviceDetailsDialogProps) {
   const { t } = useTranslation();
   const { showToast } = useToastStore();
   const [isOpen, setIsOpen] = useState(false);
@@ -28,21 +33,78 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
   const [showRestartConfirm, setShowRestartConfirm] = useState(false);
   const [showShutdownConfirm, setShowShutdownConfirm] = useState(false);
   const [showMoreDetailsDialog, setShowMoreDetailsDialog] = useState(false);
+  const [showRawDataDialog, setShowRawDataDialog] = useState(false);
   const [fullDeviceInfo, setFullDeviceInfo] = useState<Record<string, any> | null>(null);
   const [isLoadingFullDeviceInfo, setIsLoadingFullDeviceInfo] = useState(false);
-  const [isUpdatingWiFi, setIsUpdatingWiFi] = useState(false);
+  const [storageInfo, setStorageInfo] = useState<NonNullable<DeviceInfo["storage_info"]> | null>(null);
+  const [isLoadingStorageInfo, setIsLoadingStorageInfo] = useState(false);
+  const [deviceImageError, setDeviceImageError] = useState(false);
+  const fullDeviceInfoCacheRef = useRef(new Map<string, Record<string, any>>());
+  const fullDeviceInfoCompleteRef = useRef(new Set<string>());
+  const fullDeviceInfoRequestsRef = useRef(new Map<string, Promise<Record<string, any> | null>>());
+  const fullDeviceInfoRequestRef = useRef(0);
 
   useEffect(() => {
+    fullDeviceInfoRequestRef.current += 1;
     if (device) {
       setCurrentDevice(device);
-      setFullDeviceInfo(null);
+      setStorageInfo(device.storage_info || null);
+      setIsLoadingStorageInfo(!device.storage_info);
+      setFullDeviceInfo(fullDeviceInfoCacheRef.current.get(device.udid) || null);
+      setIsLoadingFullDeviceInfo(false);
+      setIsLoadingStorageInfo(false);
+      setDeviceImageError(false);
       setIsOpen(true);
     } else {
       setIsOpen(false);
+      setFullDeviceInfo(null);
+      setIsLoadingFullDeviceInfo(false);
+      setStorageInfo(null);
+      setIsLoadingStorageInfo(false);
     }
   }, [device]);
 
+  useEffect(() => {
+    if (!device || device.storage_info) return;
+    let cancelled = false;
+    setIsLoadingStorageInfo(true);
+    goServiceClient.getStorageInfo(device.udid)
+      .then((info) => {
+        if (!cancelled) setStorageInfo(info);
+      })
+      .catch((error) => {
+        if (!cancelled) console.error("Failed to load storage info:", error);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingStorageInfo(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [device]);
+
+  useEffect(() => {
+    const connectedUdidSet = new Set(connectedDeviceUdids);
+    fullDeviceInfoCacheRef.current.forEach((_info, udid) => {
+      if (!connectedUdidSet.has(udid)) {
+        fullDeviceInfoCacheRef.current.delete(udid);
+        fullDeviceInfoCompleteRef.current.delete(udid);
+      }
+    });
+
+    if (currentDevice && !connectedUdidSet.has(currentDevice.udid)) {
+      fullDeviceInfoRequestRef.current += 1;
+      setFullDeviceInfo(null);
+    }
+  }, [connectedDeviceUdids, currentDevice]);
+
+  const rawDataForViewer: Record<string, any> = useMemo(() => ({
+    ...(currentDevice?.raw_data || {}),
+    ...(fullDeviceInfo || {}),
+  }), [currentDevice?.raw_data, fullDeviceInfo]);
+
   const handleClose = () => {
+    setShowRawDataDialog(false);
     setShowMoreDetailsDialog(false);
     setFullDeviceInfo(null);
     setShowRestartConfirm(false);
@@ -51,7 +113,7 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
   };
 
   const handleDialogClose = () => {
-    if (showMoreDetailsDialog) {
+    if (showMoreDetailsDialog || showRawDataDialog) {
       return;
     }
     handleClose();
@@ -84,39 +146,100 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
     }
   };
 
-  const handleWiFiDebuggingToggle = async () => {
-    if (!currentDevice || isUpdatingWiFi || currentDevice.connection_type?.toLowerCase() !== "usb") return;
-
-    const enabled = !currentDevice.wifi_debugging_enabled;
-    setIsUpdatingWiFi(true);
-    try {
-      const applied = await goServiceClient.setWiFiDebugging(currentDevice.udid, enabled);
-      const updatedDevice = { ...currentDevice, wifi_debugging_enabled: applied };
-      setCurrentDevice(updatedDevice);
-      onDeviceUpdated?.(updatedDevice);
-      showToast(applied ? t("devices.wifiDebuggingEnabled") : t("devices.wifiDebuggingDisabled"), "success");
-    } catch (error) {
-      showToast(t("devices.wifiDebuggingFailed"), "error");
-      console.error("Failed to configure Wi-Fi debugging:", error);
-    } finally {
-      setIsUpdatingWiFi(false);
+  const loadFullDeviceInfo = async (udid: string, complete: boolean = false): Promise<Record<string, any> | null> => {
+    const cachedInfo = fullDeviceInfoCacheRef.current.get(udid);
+    if (cachedInfo && (!complete || fullDeviceInfoCompleteRef.current.has(udid))) {
+      setFullDeviceInfo(cachedInfo);
+      return cachedInfo;
     }
+
+    const requestKey = `${udid}:${complete ? "full" : "fast"}`;
+    const pendingRequest = fullDeviceInfoRequestsRef.current.get(requestKey);
+    if (pendingRequest) {
+      return pendingRequest;
+    }
+
+    const requestId = fullDeviceInfoRequestRef.current + 1;
+    fullDeviceInfoRequestRef.current = requestId;
+    setIsLoadingFullDeviceInfo(true);
+
+    const request = (async () => {
+      try {
+        const info = await goServiceClient.getFullDeviceInfo(udid, complete);
+        if (requestId !== fullDeviceInfoRequestRef.current) return null;
+        fullDeviceInfoCacheRef.current.set(udid, info);
+        if (complete) fullDeviceInfoCompleteRef.current.add(udid);
+        setFullDeviceInfo(info);
+        return info;
+      } catch (error) {
+        console.error("Failed to load full device info:", error);
+        return null;
+      } finally {
+        fullDeviceInfoRequestsRef.current.delete(requestKey);
+        if (requestId === fullDeviceInfoRequestRef.current) {
+          setIsLoadingFullDeviceInfo(false);
+        }
+      }
+    })();
+    fullDeviceInfoRequestsRef.current.set(requestKey, request);
+    return request;
   };
 
   const handleShowMoreDetails = async () => {
     if (!currentDevice || isLoadingFullDeviceInfo) return;
 
     setShowMoreDetailsDialog(true);
-    if (fullDeviceInfo) return;
+    void loadFullDeviceInfo(currentDevice.udid);
+  };
 
-    setIsLoadingFullDeviceInfo(true);
+  const handleOpenRawData = () => {
+    if (!currentDevice) return;
+    setShowRawDataDialog(true);
+    if (!fullDeviceInfoCompleteRef.current.has(currentDevice.udid)) {
+      void loadFullDeviceInfo(currentDevice.udid, true);
+    }
+  };
+
+  const getRawDeviceDataText = () => JSON.stringify(rawDataForViewer, null, 2);
+
+  const handleSaveRawData = async () => {
+    if (!currentDevice) return;
+
     try {
-      const info = await goServiceClient.getFullDeviceInfo(currentDevice.udid);
-      setFullDeviceInfo(info);
+      const targetPath = await save({
+        defaultPath: `device-data-${currentDevice.udid}.txt`,
+        filters: [
+          { name: "Text files", extensions: ["txt"] },
+          { name: "All files", extensions: ["*"] },
+        ],
+      });
+      if (!targetPath) return;
+
+      await writeTextFile(targetPath, getRawDeviceDataText());
+      showToast(t("deviceDetails.rawDataSaved"), "success");
     } catch (error) {
-      console.error("Failed to load full device info:", error);
-    } finally {
-      setIsLoadingFullDeviceInfo(false);
+      showToast(t("deviceDetails.rawDataSaveFailed"), "error");
+      console.error("Failed to save raw device data:", error);
+    }
+  };
+
+  const handleOpenInDefaultEditor = async () => {
+    if (!currentDevice) return;
+    try {
+      await invoke("open_text_in_default_editor", { content: getRawDeviceDataText() });
+    } catch (error) {
+      showToast(t("deviceDetails.openInEditorFailed"), "error");
+      console.error("Failed to open device data in the default text editor:", error);
+    }
+  };
+
+  const handleCapturePrimaryScreen = async () => {
+    try {
+      await invoke("capture_primary_screen_to_clipboard");
+      showToast(t("deviceDetails.screenCaptureCopied"), "success");
+    } catch (error) {
+      showToast(t("deviceDetails.screenCaptureFailed"), "error");
+      console.error("Failed to copy primary screen screenshot:", error);
     }
   };
 
@@ -221,32 +344,6 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
     return description;
   };
 
-  const detailRows = [
-    {
-      label: t("deviceDetails.connectionType"),
-      value:
-        (currentDevice.connection_type || "").toLowerCase() === "usb"
-          ? t("devices.connectionUsb")
-          : (currentDevice.connection_type || "").toLowerCase() === "network"
-            ? t("devices.connectionNetwork")
-            : t("devices.connectionUnknown"),
-    },
-    { label: t("deviceDetails.iosVersion"), value: `${currentDevice.version} (${currentDevice.build_version})`, copyable: true },
-    { label: t("deviceDetails.serialNumber"), value: currentDevice.serial_number, copyable: true },
-    { label: "IMEI1", value: currentDevice.imei || "-", copyable: !!currentDevice.imei },
-    { label: "IMEI2", value: currentDevice.imei2 || "-", copyable: !!currentDevice.imei2 },
-    { label: t("deviceDetails.productType"), value: `${currentDevice.product_type} (${currentDevice.regulatory_model || currentDevice.product_name})`, copyable: true },
-    { label: t("deviceDetails.modelNumber"), value: currentDevice.sales_model || `${currentDevice.model_number} ${currentDevice.region_info}`, copyable: true },
-    { label: t("deviceDetails.salesRegion"), value: getSalesRegionText(currentDevice.region_info) },
-    { label: t("deviceDetails.activationState"), value: getActivationStateText(currentDevice.activation_state) },
-    { label: t("deviceDetails.jailbreakStatus"), value: getJailbreakStatusText(currentDevice.is_jailbroken) },
-    { label: t("deviceDetails.appleIdLock"), value: currentDevice.apple_id_locked ? t("common.locked") : t("common.unlocked") },
-    { label: "iCloud", value: currentDevice.icloud_enabled ? t("common.enabled") : t("common.disabled") },
-    { label: t("deviceDetails.manufactureDate"), value: currentDevice.manufacture_date || "-" },
-    { label: t("deviceDetails.warrantyExpiration"), value: currentDevice.warranty_expiration || "-" },
-    { label: t("deviceDetails.crashLogCount"), value: currentDevice.crash_log_count.toString() },
-  ];
-
   // Translate carrier bundle ID to friendly name
   const translateCarrier = (bundleId: string): string => {
     const carriers: Record<string, string> = {
@@ -261,22 +358,6 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
     return carriers[cleanId] || bundleId;
   };
 
-  // Combine carrier info from both SIM slots
-  const getCarrierInfo = () => {
-    if (currentDevice.sim1_info && currentDevice.sim2_info) {
-      const carrier1 = translateCarrier(currentDevice.sim1_info);
-      const carrier2 = translateCarrier(currentDevice.sim2_info);
-      return `${carrier1} (1), ${carrier2} (2)`;
-    } else if (currentDevice.sim1_info) {
-      return translateCarrier(currentDevice.sim1_info);
-    } else if (currentDevice.sim2_info) {
-      return translateCarrier(currentDevice.sim2_info);
-    }
-    return null;
-  };
-
-  const carrierInfo = getCarrierInfo();
-
   const hardwareDetails = currentDevice.hardware_details;
 
   const sanitizeDisplayText = (value: string | number | null | undefined): string => {
@@ -289,7 +370,6 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
   };
 
   const getDisplayStorageBytes = () => {
-    const storageInfo = currentDevice.storage_info;
     if (!storageInfo) return null;
     // Prefer nominal disk capacity (e.g. 256GB). Data partition is smaller and
     // should not be used for the capacity badge.
@@ -314,80 +394,33 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
   const chargingState = currentDevice.battery_fully_charged
     ? t("deviceDetails.batteryStatusFull")
     : currentDevice.battery_is_charging
-      ? t("deviceDetails.batteryStatusCharging")
+      ? currentDevice.battery_watts !== undefined && currentDevice.battery_watts >= 18
+        ? t("deviceDetails.fastCharging")
+        : t("deviceDetails.slowCharging")
       : currentDevice.battery_external_connected
         ? t("deviceDetails.batteryStatusConnected")
         : t("deviceDetails.batteryStatusNotCharging");
 
-  const chargingSpeed = currentDevice.battery_watts && currentDevice.battery_watts > 0
-    ? currentDevice.battery_watts >= 18
-      ? t("deviceDetails.fastCharging")
-      : t("deviceDetails.slowCharging")
+  const batteryHealthValue = currentDevice.battery_health > 0
+    ? Math.min(100, Math.max(0, currentDevice.battery_health))
     : null;
-
-  const getBatteryIcon = (batteryLevel: number, isCharging: boolean) => {
-    if (isCharging) {
-      return BatteryCharging;
-    }
-    if (batteryLevel >= 80) return BatteryFull;
-    if (batteryLevel >= 40) return BatteryMedium;
-    if (batteryLevel >= 20) return BatteryLow;
-    return Battery;
-  };
-  
-  const extraRows = [
-    ...(currentDevice.imei ? [{ label: t("deviceDetails.imei"), value: sanitizeDisplayText(currentDevice.imei), copyable: true }] : []),
-    ...(currentDevice.imei2 ? [{ label: "IMEI2", value: sanitizeDisplayText(currentDevice.imei2), copyable: true }] : []),
-    ...(currentDevice.regulatory_model ? [{ label: t("deviceDetails.regulatoryModel"), value: sanitizeDisplayText(currentDevice.regulatory_model), copyable: true }] : []),
-    ...(currentDevice.ethernet_address ? [{ label: t("deviceDetails.ethernetAddress"), value: sanitizeDisplayText(currentDevice.ethernet_address), copyable: true }] : []),
-    ...(currentDevice.imsi ? [{ label: "IMSI", value: sanitizeDisplayText(currentDevice.imsi), copyable: true }] : []),
-    ...(currentDevice.sim_status ? [{ label: t("deviceDetails.simStatus"), value: currentDevice.sim_status }] : []),
-    ...(currentDevice.sim_tray_status ? [{ label: t("deviceDetails.simTrayStatus"), value: currentDevice.sim_tray_status }] : []),
-    ...(carrierInfo ? [{ label: t("deviceDetails.carrier"), value: carrierInfo }] : []),
-    { label: t("deviceDetails.crashLogCount"), value: currentDevice.crash_log_count.toString() },
-    ...(currentDevice.battery_level > 0 ? [{ label: t("deviceDetails.batteryLevel"), value: `${currentDevice.battery_level}%` }] : []),
-    ...(currentDevice.battery_external_connected || currentDevice.battery_is_charging || currentDevice.battery_fully_charged ? [{ label: t("deviceDetails.batteryStatus"), value: chargingSpeed ? `${chargingState} · ${chargingSpeed}` : chargingState }] : []),
-    ...(currentDevice.battery_watts && currentDevice.battery_watts >= 1
-      ? [{ label: t("deviceDetails.batteryWatts"), value: `${currentDevice.battery_watts.toFixed(1)}W` }]
-      : []),
-    
-    // Hardware Details Section
-    ...(hardwareDetails?.mlb_serial_number ? [{ label: "主板序列号 (MLB)", value: sanitizeDisplayText(hardwareDetails.mlb_serial_number), copyable: true }] : []),
-    ...(hardwareDetails?.hardware_model ? [{ label: "硬件型号", value: sanitizeDisplayText(hardwareDetails.hardware_model), copyable: true }] : []),
-    ...(hardwareDetails?.hardware_platform ? [{ label: "芯片平台", value: sanitizeDisplayText(hardwareDetails.hardware_platform), copyable: true }] : []),
-    ...(hardwareDetails?.chip_id ? [{ label: "芯片ID", value: `0x${hardwareDetails.chip_id.toString(16).toUpperCase()}`, copyable: true }] : []),
-    ...(hardwareDetails?.die_id ? [{ label: "Die ID (ECID)", value: hardwareDetails.die_id.toString(), copyable: true }] : []),
-    ...(hardwareDetails?.board_id ? [{ label: "主板ID", value: hardwareDetails.board_id.toString(), copyable: true }] : []),
-    
-    ...(hardwareDetails?.baseband_version ? [{ label: "基带版本", value: sanitizeDisplayText(hardwareDetails.baseband_version), copyable: true }] : []),
-    ...(hardwareDetails?.baseband_chip_id ? [{ label: "基带芯片ID", value: `0x${hardwareDetails.baseband_chip_id.toString(16).toUpperCase()}`, copyable: true }] : []),
-    ...(sanitizeDisplayText(hardwareDetails?.baseband_serial_number)
-      ? [{ label: "基带序列号", value: sanitizeDisplayText(hardwareDetails?.baseband_serial_number), copyable: true }]
-      : []),
-    ...(hardwareDetails?.iccid ? [{ label: "ICCID (SIM1)", value: sanitizeDisplayText(hardwareDetails.iccid), copyable: true }] : []),
-    ...(hardwareDetails?.iccid2 ? [{ label: "ICCID (SIM2)", value: sanitizeDisplayText(hardwareDetails.iccid2), copyable: true }] : []),
-    ...(hardwareDetails?.imsi2 ? [{ label: "IMSI (SIM2)", value: sanitizeDisplayText(hardwareDetails.imsi2), copyable: true }] : []),
-    ...(hardwareDetails?.meid ? [{ label: "MEID", value: sanitizeDisplayText(hardwareDetails.meid), copyable: true }] : []),
-    
-    ...(hardwareDetails?.ambient_light_sensor ? [{ label: "环境光传感器", value: hardwareDetails.ambient_light_sensor, copyable: true }] : []),
-    ...(hardwareDetails?.proximity_sensor ? [{ label: "距离传感器", value: hardwareDetails.proximity_sensor, copyable: true }] : []),
-    ...(hardwareDetails?.cover_glass_serial ? [{ label: "盖板序列号", value: hardwareDetails.cover_glass_serial, copyable: true }] : []),
-    
-    ...(hardwareDetails?.battery_serial ? [{ label: "电池序列号", value: hardwareDetails.battery_serial, copyable: true }] : []),
-    ...(hardwareDetails?.battery_manufacturer ? [{ label: "电池制造商", value: hardwareDetails.battery_manufacturer, copyable: true }] : []),
-    
-    ...(hardwareDetails?.wifi_chipset ? [{ label: "WiFi芯片组", value: hardwareDetails.wifi_chipset, copyable: true }] : []),
-    ...(hardwareDetails?.wifi_module_serial ? [{ label: "WiFi模块序列号", value: hardwareDetails.wifi_module_serial, copyable: true }] : []),
-    ...(hardwareDetails?.wifi_driver_version ? [{ label: "WiFi驱动版本", value: hardwareDetails.wifi_driver_version, copyable: true }] : []),
-    ...(hardwareDetails?.wireless_board_serial ? [{ label: "无线板序列号", value: hardwareDetails.wireless_board_serial, copyable: true }] : []),
-    
-    ...(hardwareDetails?.display_max_brightness ? [{ label: "最大亮度", value: `${hardwareDetails.display_max_brightness} nits`, copyable: true }] : []),
-    ...(hardwareDetails?.display_type ? [{ label: "显示类型", value: hardwareDetails.display_type, copyable: true }] : []),
-    
-    ...(hardwareDetails?.partition_type ? [{ label: "分区类型", value: hardwareDetails.partition_type, copyable: true }] : []),
-    ...(hardwareDetails?.apfs_container_uuid ? [{ label: "APFS容器UUID", value: hardwareDetails.apfs_container_uuid, copyable: true }] : []),
-    ...(hardwareDetails?.boot_session_id ? [{ label: "启动会话ID", value: hardwareDetails.boot_session_id, copyable: true }] : []),
-  ];
+  const storageUsedValue = storageInfo && Number.isFinite(storageInfo.used_percentage)
+    ? Math.min(100, Math.max(0, storageInfo.used_percentage))
+    : null;
+  const batteryRingColor = batteryHealthValue === null
+    ? "#cbd5e1"
+    : batteryHealthValue >= 80
+      ? "#16a34a"
+      : batteryHealthValue >= 50
+        ? "#d97706"
+        : "#dc2626";
+  const storageRingColor = storageUsedValue === null
+    ? "#cbd5e1"
+    : storageUsedValue >= 90
+      ? "#dc2626"
+      : storageUsedValue >= 75
+        ? "#d97706"
+        : "#0891b2";
 
   const formatDetailValue = (value: unknown): string => {
     if (value === null || value === undefined || value === "") {
@@ -417,7 +450,6 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
     });
   };
   mergeDetailData(fullDeviceInfo);
-
   const normalizeDetailKey = (key: string): string => key.toLowerCase().replace(/[^a-z0-9]/g, "");
 
   const findDetailValue = (...keys: string[]): unknown => {
@@ -604,7 +636,7 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
         { label: "Wi-Fi序号", value: formatDetailValue(hardwareDetails?.wifi_module_serial || detailData.WiFiModuleSerial || detailData.WiFiSerialNumber), copyable: true },
         { label: "屏幕分辨率", value: screenResolutionValue },
         { label: "CPU频率", value: formatCpuFrequency(cpuFrequencyValue) },
-        { label: "无线技术类型", value: rawDetailValueOr("ActiveWirelessTechnology", "kCTWirelessTechnology", "WirelessTechnology", "WirelessTechnologyType", "BasebandRegionSKURadioTechnology", "TelephonyMaximumGeneration") },
+        { label: "无线技术类型", value: currentDevice.wireless_technology ? formatDetailValue(currentDevice.wireless_technology) : rawDetailValueOr("ActiveWirelessTechnology", "kCTWirelessTechnology", "WirelessTechnology", "WirelessTechnologyType", "BasebandRegionSKURadioTechnology", "TelephonyMaximumGeneration") },
         { label: "硬盘类型", value: diskTypeValue },
         { label: "协处理器", value: coprocessorValue },
         { label: "硬件版本", value: formatDetailValue(hardwareDetails?.hardware_platform) },
@@ -613,14 +645,14 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
     },
     {
       rows: [
-        { label: "距离传感器", value: formatHardwareSerialValue(findDetailValue("sensor:proximitySensor", "sensor:ProximitySensor", "sensor:ProximitySensorSerialNumber", "ProximitySensorSerialNumber", "ProximitySensorSerial", "RosalineSerialNumber", "Rosaline") ?? hardwareDetails?.proximity_sensor) },
+        { label: "距离传感器", value: formatHardwareSerialValue(findDetailValue("sensor:rosaline-serial-num", "sensor:proximitySensor", "sensor:ProximitySensor", "sensor:ProximitySensorSerialNumber", "rosaline-serial-num", "RosalineSerialNumber", "ProximitySensorSerialNumber", "ProximitySensorSerial", "Rosaline") ?? hardwareDetails?.proximity_sensor) },
         { label: "环境光", value: formatHardwareSerialValue(findDetailValue("sensor:ambientLightSensor", "sensor:AmbientLightSensor", "sensor:AmbientLightSensorSerialNumber", "AmbientLightSensorSerialNumber", "ambient-light-sensor-serial-num") ?? hardwareDetails?.ambient_light_sensor) },
-        { label: "点阵", value: formatHardwareSerialValue(findDetailValue("sensor:dotProjector", "sensor:DotProjector", "sensor:DotMatrix", "sensor:DotProjectorSerialNumber", "FrontFacingIRStructuredLightProjectorModuleSerialNumber")) },
-        { label: "红外摄像头", value: formatHardwareSerialValue(findDetailValue("sensor:infraredCamera", "sensor:InfraredCameraSerialNumber", "sensor:InfraredCameraModuleSerial", "FrontFacingIRCameraModuleSerialNumber", "front-facing-ir-camera-module-serial-number", "FrontCameraSerialNumber")) },
+        { label: "点阵", value: formatHardwareSerialValue(findDetailValue("camera:FrontIRStructuredLightProjectorSerialNumString", "sensor:dotProjector", "sensor:DotProjector", "sensor:DotMatrix", "sensor:DotProjectorSerialNumber", "FrontFacingIRStructuredLightProjectorModuleSerialNumber", "FrontIRStructuredLightProjectorSerialNumString")) },
+        { label: "红外摄像头", value: formatHardwareSerialValue(findDetailValue("camera:FrontIRCameraModuleSerialNumString", "sensor:infraredCamera", "sensor:InfraredCameraSerialNumber", "sensor:InfraredCameraModuleSerial", "FrontFacingIRCameraModuleSerialNumber", "front-facing-ir-camera-module-serial-number", "FrontCameraSerialNumber", "FrontIRCameraModuleSerialNumString")) },
         { label: "电池序列号", value: formatHardwareSerialValue(findDetailValue("sensor:battery", "BatterySerialNumber", "battery-serial-number") ?? (hardwareDetails?.battery_serial || detailData.BatterySerialNumber)), copyable: true },
-        { label: "震动器编码", value: rawDetailValueOr("VibrationMotorCode", "TapticEngineCode") },
+        { label: "震动器编码", value: rawDetailValueOr("camera:JasperSNUM", "JasperSNUM", "VibrationMotorCode", "TapticEngineCode") },
         { label: "盖板码", value: formatHardwareSerialValue(findDetailValue("sensor:coverGlass", "CoverglassSerialNumber", "CoverGlassSerialNumber", "coverglass-serial-number") ?? (hardwareDetails?.cover_glass_serial || detailData.CoverGlassSerialNumber)), copyable: true, span: 3 },
-        { label: "屏幕序列号", value: formatHardwareSerialValue(findDetailValue("sensor:screen", "DisplaySerialNumber", "ScreenSerialNumber", "PanelSerialNumber", "RawPanelSerialNumber", "raw-panel-serial-number") ), span: 3 },
+        { label: "屏幕序列号", value: formatHardwareSerialValue(findDetailValue("sensor:screen", "DisplaySerialNumber", "ScreenSerialNumber", "PanelSerialNumber", "RawPanelSerialNumber", "raw-panel-serial-number") ), span: 3, truncate: true },
       ],
     },
   ];
@@ -652,8 +684,50 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
               leaveFrom="opacity-100 scale-100"
               leaveTo="opacity-0 scale-95"
             >
-              {showMoreDetailsDialog ? (
-                <Dialog.Panel className="flex h-[min(90vh,760px)] w-full max-w-6xl flex-col overflow-hidden rounded-xl bg-white text-left shadow-xl">
+              {showRawDataDialog ? (
+                <Dialog.Panel className="flex h-[min(calc(100vh-16px),760px)] w-full max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-xl bg-white text-left shadow-xl">
+                  <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+                    <Dialog.Title className="text-lg font-semibold text-gray-900">
+                      {t("deviceDetails.rawData")}
+                    </Dialog.Title>
+                    {isLoadingFullDeviceInfo && (
+                      <span className="flex items-center gap-1.5 text-xs text-gray-500">
+                        <Loader2 size={14} className="animate-spin text-primary-600" />
+                        {t("common.loading")}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setShowRawDataDialog(false)}
+                      className="text-gray-400 transition-colors hover:text-gray-600"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+                  {isLoadingFullDeviceInfo && Object.keys(rawDataForViewer).length === 0 ? (
+                    <div className="flex flex-1 items-center justify-center gap-2 text-sm text-gray-500">
+                      <Loader2 size={16} className="animate-spin text-primary-600" />
+                      {t("common.loading")}
+                    </div>
+                  ) : (
+                    <RawDataViewer
+                      data={rawDataForViewer}
+                      alwaysShowSearch
+                      className="min-h-0"
+                      toolbarAction={(
+                        <button
+                          type="button"
+                          onClick={handleSaveRawData}
+                          className="text-sm text-gray-700 transition-colors hover:text-primary-600"
+                        >
+                          {t("deviceDetails.saveToNotepad")}
+                        </button>
+                      )}
+                    />
+                  )}
+                </Dialog.Panel>
+              ) : showMoreDetailsDialog ? (
+                <Dialog.Panel className="flex h-[min(calc(100vh-16px),760px)] w-full max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-xl bg-white text-left shadow-xl">
                   <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
                     <Dialog.Title className="text-lg font-semibold text-gray-900">
                       {t("deviceDetails.title")}
@@ -670,7 +744,7 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
                     {moreDetailSections.map((section, sectionIndex) => (
                       <div
                         key={`section-${sectionIndex}`}
-                        className="grid grid-cols-1 gap-x-8 gap-y-3 border-b border-gray-200 py-5 last:border-b-0 md:grid-cols-3"
+                        className="grid grid-cols-1 gap-x-5 gap-y-1 border-b border-gray-200 py-2.5 last:border-b-0 md:grid-cols-3"
                       >
                         {section.rows.map((row, rowIndex) => (
                           <div
@@ -681,300 +755,160 @@ export default function DeviceDetailsDialog({ device, onClose, onDeviceUpdated }
                               label={row.label}
                               value={row.value}
                               copyable={row.copyable}
+                              truncate={"truncate" in row ? row.truncate : false}
                             />
                           </div>
                         ))}
                       </div>
                     ))}
+                    {isLoadingFullDeviceInfo && (
+                      <div className="flex items-center gap-2 py-3 text-xs text-gray-500">
+                        <Loader2 size={14} className="animate-spin text-primary-600" />
+                        {t("common.loading")}
+                      </div>
+                    )}
                   </div>
-                  <div className="flex justify-end border-t border-gray-200 bg-white px-6 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-200 bg-white px-6 py-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleOpenRawData}
+                        className="rounded-md border border-gray-200 bg-white px-4 py-2 text-sm text-gray-700 transition-colors hover:border-primary-300 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {t("deviceDetails.rawData")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleOpenInDefaultEditor}
+                        className="rounded-md border border-gray-200 bg-white px-4 py-2 text-sm text-gray-700 transition-colors hover:border-primary-300 hover:text-primary-600"
+                      >
+                        {t("deviceDetails.openInDefaultEditor")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCapturePrimaryScreen}
+                        className="rounded-md border border-gray-200 bg-white px-4 py-2 text-sm text-gray-700 transition-colors hover:border-primary-300 hover:text-primary-600"
+                      >
+                        {t("deviceDetails.captureScreen")}
+                      </button>
+                    </div>
                     <button
                       type="button"
                       onClick={() => setShowMoreDetailsDialog(false)}
-                      className="rounded-lg bg-gray-100 px-5 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200"
+                      className="rounded-md bg-primary-50 px-5 py-2 text-sm font-medium text-primary-700 transition-colors hover:bg-primary-100"
                     >
                       {t("common.confirm")}
                     </button>
                   </div>
                 </Dialog.Panel>
               ) : (
-              <Dialog.Panel className="w-full max-w-4xl max-h-[85vh] transform overflow-hidden rounded-2xl bg-white text-left align-middle shadow-xl transition-all flex flex-col">
-                {/* Header */}
-                <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200">
-                  <Dialog.Title as="div" className="flex items-center gap-2 min-w-0">
-                    <span className="text-base font-semibold text-gray-900 truncate">
-                      {currentDevice.name}
-                    </span>
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-medium flex-shrink-0 ${
-                        (currentDevice.connection_type || "").toLowerCase() === "network"
-                          ? "bg-sky-50 text-sky-700 border-sky-200"
-                          : (currentDevice.connection_type || "").toLowerCase() === "usb"
-                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                            : "bg-gray-50 text-gray-600 border-gray-200"
-                      }`}
-                    >
-                      {(currentDevice.connection_type || "").toLowerCase() === "usb"
-                        ? t("devices.connectionUsb")
-                        : (currentDevice.connection_type || "").toLowerCase() === "network"
-                          ? t("devices.connectionNetwork")
-                          : t("devices.connectionUnknown")}
-                    </span>
-                    <span className="text-sm text-gray-600 truncate">
-                      {(() => {
-                        const modelName = getDeviceModelName(currentDevice.product_type);
-                        const colorName = getDeviceColorName(
-                          currentDevice.product_type,
-                          currentDevice.color,
-                          currentDevice.enclosure_color
-                        );
-                        return colorName ? `${modelName} ${colorName}` : modelName;
-                      })()}
-                    </span>
-                    {getStorageCapacityLabel() && (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-slate-100 text-slate-800 border border-slate-200 text-[11px] font-medium flex-shrink-0">
-                        {getStorageCapacityLabel()}
-                      </span>
-                    )}
+              <Dialog.Panel className="flex h-[min(calc(100vh-32px),680px)] w-full max-w-[1040px] flex-col overflow-hidden rounded-xl bg-[#f8fafb] text-left shadow-xl">
+                <div className="flex h-16 flex-shrink-0 items-center justify-between border-b border-gray-200 px-6">
+                  <Dialog.Title className="flex min-w-0 items-center gap-3 text-[16px] text-gray-800">
+                    <span>{currentDevice.name}</span>
+                    <span className="text-gray-300">|</span>
+                    <span className="truncate">{getDeviceModelName(currentDevice.product_type)} {colorName || ""}</span>
+                    {getStorageCapacityLabel() && <span className="flex-shrink-0 rounded-full bg-gray-200 px-2.5 py-1 text-xs text-gray-700">{getStorageCapacityLabel()}</span>}
                   </Dialog.Title>
-                  <div className="flex items-center gap-3 flex-shrink-0">
-                    {currentDevice.battery_level > 0 && (
-                      <div className="flex items-center gap-1.5 text-gray-600">
-                        {(() => {
-                          const BatteryIcon = getBatteryIcon(
-                            currentDevice.battery_level,
-                            currentDevice.battery_is_charging
-                          );
-                          const Icon = BatteryIcon;
-                          return (
-                            <Icon
-                              size={16}
-                              className={
-                                currentDevice.battery_level <= 20 && !currentDevice.battery_is_charging
-                                  ? "text-red-500"
-                                  : currentDevice.battery_is_charging
-                                    ? "text-green-500"
-                                    : "text-gray-700"
-                              }
-                            />
-                          );
-                        })()}
-                        <span
-                          className={`text-xs font-medium ${
-                            currentDevice.battery_level <= 20 && !currentDevice.battery_is_charging
-                              ? "text-red-600"
-                              : "text-gray-700"
-                          }`}
-                        >
-                          {currentDevice.battery_level}%
-                        </span>
-                      </div>
-                    )}
-                    <div className="hidden sm:flex items-center gap-2">
-                      <Button3D
-                        variant="accent"
-                        size="sm"
-                        onClick={() => setShowRestartConfirm(true)}
-                      >
-                        {t("devices.restart")}
-                      </Button3D>
-                      <Button3D
-                        variant="dangerFilled"
-                        size="sm"
-                        onClick={() => setShowShutdownConfirm(true)}
-                      >
-                        {t("devices.shutdown")}
-                      </Button3D>
-                    </div>
-                    <button
-                      onClick={handleClose}
-                      className="text-gray-400 hover:text-gray-600 transition-colors"
-                    >
-                      <X size={20} />
+                  <div className="ml-4 flex flex-shrink-0 items-center gap-2 text-sm text-gray-700">
+                    <span>{currentDevice.battery_is_charging || currentDevice.battery_fully_charged ? chargingState : t("deviceDetails.batteryStatusNotCharging")}</span>
+                    <span className="rounded bg-gray-900 px-2 py-0.5 font-semibold text-white">{currentDevice.battery_level > 0 ? currentDevice.battery_level : "--"}</span>
+                    <span>%</span>
+                    <button type="button" onClick={handleClose} className="ml-3 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600" aria-label={t("common.close")}>
+                      <X size={21} />
                     </button>
                   </div>
                 </div>
 
-                {/* Content */}
-                <div className="flex-1 overflow-hidden px-6 py-4 bg-slate-50/40">
-                  <div className="grid grid-cols-1 lg:grid-cols-[1fr_minmax(280px,1.2fr)] gap-4 lg:gap-4 h-full">
-                    {/* Details column */}
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-3 flex flex-col min-h-0">
-                      <div className="flex items-center justify-between mb-2">
-                        <h4 className="text-sm font-semibold text-gray-900">
-                          {t("deviceDetails.deviceInfo")}
-                        </h4>
-                        {extraRows.length > 0 && (
-                          <button
-                            onClick={handleShowMoreDetails}
-                            className="text-xs font-medium text-gray-600 hover:text-primary-600 inline-flex items-center gap-1"
-                          >
-                            <ChevronRight size={14} />
-                            <span>{t("deviceDetails.moreDetails")}</span>
-                          </button>
+                <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+                  <div className="grid min-h-[450px] grid-cols-1 gap-4 lg:grid-cols-[250px_minmax(360px,1fr)_260px]">
+                    <div className="flex min-h-[420px] flex-col items-center justify-between rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+                      <div className="flex min-h-0 flex-1 items-center justify-center py-2">
+                        {!deviceImageError && currentDevice.product_type && currentDevice.color ? (
+                          <img
+                            src={`https://statici.icloud.com/fmipmobile/deviceImages-9.0/iPhone/${currentDevice.product_type}-1-${currentDevice.color}-0/online-infobox__3x.png`}
+                            alt={currentDevice.name}
+                            className="max-h-[350px] max-w-[210px] object-contain drop-shadow-[0_14px_14px_rgba(100,116,139,0.22)]"
+                            onError={() => setDeviceImageError(true)}
+                          />
+                        ) : (
+                          <Smartphone className="text-gray-300" size={160} strokeWidth={1} />
                         )}
                       </div>
-                      <div className="mt-1 flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-thin">
-                        <div>
-                          {detailRows.map((row, index) => (
-                            <DetailRow
-                              key={index}
-                              label={row.label}
-                              value={row.value}
-                              copyable={row.copyable}
-                            />
-                          ))}
-                        </div>
+                      <div className="flex w-full flex-wrap items-center justify-center gap-2 border-t border-gray-100 pt-3">
+                        <Button3D type="button" variant="secondary" size="sm" onClick={() => setShowRestartConfirm(true)}>{t("devices.restart")}</Button3D>
+                        <Button3D type="button" variant="danger" size="sm" onClick={() => setShowShutdownConfirm(true)}>{t("devices.shutdown")}</Button3D>
+                        <Button3D type="button" variant="accent" size="sm" onClick={() => onRefresh?.()}>{t("deviceDetails.refresh")}</Button3D>
                       </div>
                     </div>
 
-                    {/* Right: Battery on top, Storage below */}
-                    <div className="space-y-4">
-                      <div className="rounded-xl border border-sky-100 bg-sky-50/60 px-3 py-2.5">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <Wifi size={16} className="flex-shrink-0 text-sky-600" />
-                            <div className="min-w-0">
-                              <p className="text-xs font-semibold text-gray-900">{t("deviceDetails.wifiDebugging")}</p>
-                              <p className="mt-0.5 text-[11px] text-gray-500">
-                                {currentDevice.connection_type?.toLowerCase() === "usb"
-                                  ? t("deviceDetails.wifiDebuggingUsbHint")
-                                  : t("deviceDetails.wifiDebuggingUsbRequired")}
-                              </p>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={currentDevice.wifi_debugging_enabled}
-                            aria-label={t("deviceDetails.wifiDebugging")}
-                            disabled={isUpdatingWiFi || currentDevice.connection_type?.toLowerCase() !== "usb"}
-                            onClick={handleWiFiDebuggingToggle}
-                            className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-2 ${
-                              currentDevice.wifi_debugging_enabled ? "bg-sky-600" : "bg-gray-300"
-                            } ${isUpdatingWiFi || currentDevice.connection_type?.toLowerCase() !== "usb" ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
-                          >
-                            <span
-                              className={`inline-flex h-5 w-5 transform items-center justify-center rounded-full bg-white shadow transition-transform ${
-                                currentDevice.wifi_debugging_enabled ? "translate-x-5" : "translate-x-0.5"
-                              }`}
-                            >
-                              {isUpdatingWiFi && <Loader2 size={11} className="animate-spin text-sky-600" />}
-                            </span>
-                          </button>
-                        </div>
+                    <div className="flex min-h-[420px] flex-col rounded-xl border border-gray-200 bg-white px-5 py-4 shadow-sm">
+                      <div className="min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-thin">
+                        <DetailRow label={t("deviceDetails.iosVersion")} value={`${currentDevice.version} (${currentDevice.build_version})`} large />
+                        <DetailRow label={t("deviceDetails.serialNumber")} value={currentDevice.serial_number || "-"} large copyable />
+                        <DetailRow label="IMEI1" value={currentDevice.imei || "-"} large copyable />
+                        <DetailRow label="IMEI2" value={currentDevice.imei2 || "-"} large copyable />
+                        <DetailRow label={t("deviceDetails.productType")} value={`${currentDevice.product_type} (${currentDevice.regulatory_model || currentDevice.product_name})`} large />
+                        <DetailRow label={t("deviceDetails.modelNumber")} value={currentDevice.sales_model || `${currentDevice.model_number} ${currentDevice.region_info}`} large />
+                        <DetailRow label={t("deviceDetails.salesRegion")} value={getSalesRegionText(currentDevice.region_info)} large />
+                        <DetailRow label={t("deviceDetails.activationState")} value={getActivationStateText(currentDevice.activation_state)} large />
+                        <DetailRow label={t("deviceDetails.jailbreakStatus")} value={getJailbreakStatusText(currentDevice.is_jailbroken)} large />
+                        <DetailRow label={t("deviceDetails.appleIdLock")} value={currentDevice.apple_id_locked ? t("common.enabled") : t("common.disabled")} large />
+                        <DetailRow label="iCloud" value={currentDevice.icloud_enabled ? t("common.enabled") : t("common.disabled")} large />
+                        <DetailRow label={t("deviceDetails.manufactureDate")} value={currentDevice.manufacture_date || t("deviceDetails.unknown")} large />
+                        <DetailRow label={t("deviceDetails.crashLogCount")} value={t("common.file", { count: currentDevice.crash_log_count })} large />
                       </div>
-                      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4">
-                        <div className="flex items-center justify-between mb-3">
+                      <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-3">
+                        <Button3D type="button" variant="secondary" size="sm" onClick={handleShowMoreDetails}>
+                          <Info size={14} />
+                          {t("deviceDetails.title")}
+                        </Button3D>
+                        <Button3D type="button" variant="accent" size="sm" onClick={handleOpenRawData}>
+                          <Activity size={14} />
+                          {t("deviceDetails.rawData")}
+                        </Button3D>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-3 self-start">
+                      <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+                        <div className="flex items-start justify-between">
                           <div>
-                            <h4 className="text-sm font-semibold text-gray-900">
-                              {t("deviceDetails.batteryHealth")}
-                            </h4>
-                            <p className="mt-0.5 text-xs text-gray-500">
-                              {t("deviceDetails.batteryCycles")}: {currentDevice.battery_cycle_count > 0 ? currentDevice.battery_cycle_count : '-'}
-                            </p>
+                            <h4 className="text-sm font-medium text-gray-800">{t("deviceDetails.batteryHealth")}</h4>
+                            <p className="mt-2 text-xs text-gray-500">{t("deviceDetails.batteryCycles")} {currentDevice.battery_cycle_count > 0 ? t("deviceDetails.batteryCycleCountValue", { count: currentDevice.battery_cycle_count }) : "-"}</p>
                           </div>
-                          <div className="flex flex-col items-center">
-                            <div className="relative inline-flex items-center justify-center w-16 h-16">
-                              <svg className="w-16 h-16 transform -rotate-90">
-                                <circle
-                                  cx="32"
-                                  cy="32"
-                                  r="28"
-                                  stroke="#e5e7eb"
-                                  strokeWidth="6"
-                                  fill="none"
-                                />
-                                <circle
-                                  cx="32"
-                                  cy="32"
-                                  r="28"
-                                  stroke="#fbbf24"
-                                  strokeWidth="6"
-                                  fill="none"
-                                  strokeDasharray={`${2 * Math.PI * 28}`}
-                                  strokeDashoffset={`${2 * Math.PI * 28 * (1 - (currentDevice.battery_health > 0 ? currentDevice.battery_health : 0) / 100)}`}
-                                  strokeLinecap="round"
-                                  className="transition-all duration-500"
-                                />
-                              </svg>
-                              <span className="absolute text-sm font-semibold text-gray-900">
-                                {currentDevice.battery_health > 0 ? `${currentDevice.battery_health}%` : '--'}
-                              </span>
-                            </div>
+                          <div className="relative h-14 w-14 flex-shrink-0">
+                            <svg viewBox="0 0 64 64" className="h-full w-full" aria-hidden="true">
+                              <g transform="rotate(-90 32 32)">
+                                <circle cx="32" cy="32" r="27" fill="none" stroke="#e5e7eb" strokeWidth="5" pathLength="100" />
+                                <circle cx="32" cy="32" r="27" fill="none" stroke={batteryRingColor} strokeWidth="5" strokeLinecap="round" pathLength="100" strokeDasharray="100 100" strokeDashoffset={batteryHealthValue === null ? 100 : 100 - batteryHealthValue} />
+                              </g>
+                            </svg>
+                            <span className="absolute inset-0 flex items-center justify-center text-sm font-medium text-gray-800">{batteryHealthValue === null ? "--" : `${batteryHealthValue}%`}</span>
                           </div>
                         </div>
-                        {currentDevice.battery_level > 0 && (
-                          <p className="text-xs text-gray-600">
-                            {t("deviceDetails.batteryLevel")}: {currentDevice.battery_level}%
-                          </p>
-                        )}
-                        <p className="mt-1 text-xs text-gray-600">
-                          {t("deviceDetails.batteryStatus")}: {chargingSpeed ? `${chargingState} · ${chargingSpeed}` : chargingState}
-                        </p>
-                        {currentDevice.battery_watts && currentDevice.battery_watts >= 1 && (
-                          <p className="mt-1 text-xs text-gray-600">
-                            {t("deviceDetails.batteryWatts")}: {currentDevice.battery_watts.toFixed(1)}W
-                          </p>
-                        )}
                       </div>
 
-                      {currentDevice.storage_info && (
-                        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4">
-                          <div className="flex items-center justify-between mb-3">
-                            <h4 className="text-sm font-semibold text-gray-900">
-                              {t("deviceDetails.storage")}
-                            </h4>
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-slate-100 text-slate-800 border border-slate-200 text-[11px] font-medium">
-                              {getStorageCapacityLabel()}
-                            </span>
+                      <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <h4 className="text-sm font-medium text-gray-800">{t("deviceDetails.storage")} {getStorageCapacityLabel()}</h4>
+                            <p className="mt-2 text-xs text-gray-500">{t("deviceDetails.available")} {isLoadingStorageInfo ? t("common.loading") : storageInfo?.formatted_available || "-"}</p>
                           </div>
-                          <div className="space-y-1 text-xs text-gray-700 mb-2">
-                            <div className="flex items-center justify-between">
-                              <span>{currentDevice.storage_info.formatted_used} {t("deviceDetails.used")}</span>
-                              <span className="font-semibold">{currentDevice.storage_info.used_percentage.toFixed(1)}%</span>
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span>{currentDevice.storage_info.formatted_available} {t("deviceDetails.available")}</span>
-                              <span className="text-gray-500">{t("deviceDetails.totalCapacity")}: {currentDevice.storage_info.formatted_total}</span>
-                            </div>
-                          </div>
-                          <div className="w-full bg-white/60 rounded-full h-3 overflow-hidden border border-blue-100">
-                            <div
-                              className={`h-full rounded-full transition-all ${
-                                currentDevice.storage_info.used_percentage >= 90 ? 'bg-red-500' :
-                                currentDevice.storage_info.used_percentage >= 75 ? 'bg-orange-500' :
-                                'bg-blue-500'
-                              }`}
-                              style={{ width: `${Math.min(currentDevice.storage_info.used_percentage, 100)}%` }}
-                            />
+                          <div className="relative h-14 w-14 flex-shrink-0">
+                            <svg viewBox="0 0 64 64" className="h-full w-full" aria-hidden="true">
+                              <g transform="rotate(-90 32 32)">
+                                <circle cx="32" cy="32" r="27" fill="none" stroke="#e5e7eb" strokeWidth="5" pathLength="100" />
+                                <circle cx="32" cy="32" r="27" fill="none" stroke={storageRingColor} strokeWidth="5" strokeLinecap="round" pathLength="100" strokeDasharray="100 100" strokeDashoffset={storageUsedValue === null ? 100 : 100 - storageUsedValue} />
+                              </g>
+                            </svg>
+                            <span className="absolute inset-0 flex items-center justify-center text-sm font-medium text-gray-800">{isLoadingStorageInfo ? "…" : storageUsedValue === null ? "--" : `${Math.round(storageUsedValue)}%`}</span>
                           </div>
                         </div>
-                      )}
-
-                      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 text-xs text-gray-700">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="font-semibold">{t("deviceDetails.crashLogCount")}</span>
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-gray-100 text-gray-800 font-mono text-xs">
-                            {currentDevice.crash_log_count}
-                          </span>
-                        </div>
-                        <p className="text-gray-500">
-                          {t("deviceDetails.timeZone")}: {currentDevice.time_zone || '-'}
-                        </p>
                       </div>
+
                     </div>
                   </div>
-                </div>
-
-                {/* Footer */}
-                <div className="px-6 py-4 border-t border-gray-200 flex justify-end bg-white">
-                  <button
-                    onClick={handleClose}
-                    className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-medium"
-                  >
-                    {t("common.close")}
-                  </button>
                 </div>
               </Dialog.Panel>
               )}
