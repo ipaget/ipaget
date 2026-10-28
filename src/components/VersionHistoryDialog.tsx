@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useState } from "react";
 import { Dialog, Transition } from "@headlessui/react";
-import { X, Download } from "lucide-react";
+import { X, Download, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppSearchResult, AppVersionHistory, TokenExpiredError, goServiceClient } from "../lib/goService";
+import { withNetworkHint } from "../lib/errorHint";
 import { useAccountStore, handleTokenExpired } from "../store/accountStore";
 import { useErrorStore } from "../store/errorStore";
 import VersionHistoryProgressDialog from "./VersionHistoryProgressDialog";
@@ -12,6 +13,20 @@ interface VersionHistoryDialogProps {
   app: AppSearchResult;
   onClose: () => void;
   onDownloadVersion: (versionId: string) => void;
+}
+
+function compareVersionIdsDescending(left: string, right: string): number {
+  const leftValue = left.replace(/^0+(?=\d)/, "");
+  const rightValue = right.replace(/^0+(?=\d)/, "");
+
+  if (/^\d+$/.test(leftValue) && /^\d+$/.test(rightValue)) {
+    if (leftValue.length !== rightValue.length) {
+      return rightValue.length - leftValue.length;
+    }
+    return rightValue.localeCompare(leftValue);
+  }
+
+  return right.localeCompare(left);
 }
 
 export default function VersionHistoryDialog({
@@ -27,6 +42,7 @@ export default function VersionHistoryDialog({
   const [taskId, setTaskId] = useState<string | undefined>();
   const [progress, setProgress] = useState(0);
   const [statusMessage, setStatusMessage] = useState("");
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   const task = useTaskSubscription(taskId, {
     onProgress: (task) => {
@@ -39,7 +55,7 @@ export default function VersionHistoryDialog({
       }
     },
     onError: (task) => {
-      showError(t("search.versionsFailed"), task.message);
+      showError(t("search.versionsFailed"), withNetworkHint(task.message, t("common.networkInterrupted")));
       onClose();
     },
   });
@@ -51,21 +67,39 @@ export default function VersionHistoryDialog({
         return;
       }
       try {
-        const result = await goServiceClient.getAppVersionHistory(app.bundle_id, selectedAccount.email);
+        const result = await goServiceClient.getAppVersionHistory(
+          app.bundle_id,
+          selectedAccount.email,
+          refreshNonce > 0
+        );
         setTaskId(result.task_id);
       } catch (error: any) {
         if (error instanceof TokenExpiredError) {
           handleTokenExpired();
         } else {
-          showError(t("search.versionsFailed"), error?.toString?.() || String(error));
+          const message = error?.toString?.() || String(error);
+          showError(t("search.versionsFailed"), withNetworkHint(message, t("common.networkInterrupted")));
         }
         onClose();
       }
     };
     loadVersions();
-  }, [app.bundle_id, onClose, selectedAccount, showError, t]);
+  }, [app.bundle_id, onClose, refreshNonce, selectedAccount, showError, t]);
+
+  const handleRefresh = () => {
+    setVersionHistory(null);
+    setTaskId(undefined);
+    setProgress(0);
+    setStatusMessage("");
+    setRefreshNonce((value) => value + 1);
+  };
 
   const isLoading = !versionHistory && task?.status !== "error";
+  const sortedVersions = versionHistory?.versions
+    ? [...versionHistory.versions].sort((left, right) =>
+        compareVersionIdsDescending(left.version_id, right.version_id)
+      )
+    : [];
 
   return (
     <>
@@ -109,9 +143,19 @@ export default function VersionHistoryDialog({
                     <Dialog.Title as="h3" className="text-lg font-semibold text-gray-900">
                       {t('search.versionHistoryFor', { appName: app.name })}
                     </Dialog.Title>
-                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-                      <X size={20} />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleRefresh}
+                        className="text-gray-400 hover:text-primary-600"
+                        title={t('search.refreshVersions')}
+                      >
+                        <RefreshCw size={18} />
+                      </button>
+                      <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                        <X size={20} />
+                      </button>
+                    </div>
                   </div>
 
                   {versionHistory && versionHistory.versions?.length > 0 ? (
@@ -120,14 +164,16 @@ export default function VersionHistoryDialog({
                         <thead className="text-xs text-gray-500 uppercase bg-gray-50">
                           <tr>
                             <th className="px-6 py-3">{t('search.version')}</th>
+                            <th className="px-6 py-3">{t('search.internalVersionId')}</th>
                             <th className="px-6 py-3">{t('search.releaseDate')}</th>
                             <th className="px-6 py-3"></th>
                           </tr>
                         </thead>
                         <tbody>
-                          {versionHistory.versions.map((v) => (
+                          {sortedVersions.map((v) => (
                             <tr key={v.version_id} className="bg-white border-b hover:bg-gray-50">
-                              <td className="px-6 py-3 font-medium text-gray-900">{v.version_string || v.version_id}</td>
+                              <td className="px-6 py-3 font-medium text-gray-900">{v.version_string || 'N/A'}</td>
+                              <td className="px-6 py-3 font-mono text-gray-600">{v.version_id}</td>
                               <td className="px-6 py-3 text-gray-600">{v.release_date || 'N/A'}</td>
                               <td className="px-6 py-3 text-right">
                                 <button

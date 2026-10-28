@@ -12,12 +12,10 @@ import { goServiceClient, AppSearchResult, AppStoreType, TokenExpiredError } fro
 import { useDownloadStore } from "../store/downloadStore";
 import PageLoading from "../components/PageLoading";
 import Button3D from "../components/Button3D";
+import { SubtitleScheduler, selectViewportSubtitles } from "../lib/subtitleScheduler";
 
 const SEARCH_RESULTS_LIMIT = 200;
 const DISPLAY_PAGE_SIZE = 20;
-const SUBTITLE_VIEWPORT_BATCH_SIZE = 16;
-const SUBTITLE_VIEWPORT_PREFETCH_SIZE = 6;
-const SUBTITLE_REQUEST_BATCH_SIZE = 2;
 
 const getDeviceCompatibility = (supportedDevices?: string[]) => {
   const deviceNames = (supportedDevices || []).map((device) => device.toLowerCase());
@@ -75,14 +73,25 @@ export default function SearchPage() {
   const prevStoreTypeRef = useRef<AppStoreType>("iphone");
   const suggestionItemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const subtitleCacheRef = useRef<Record<string, string>>({});
-  const subtitleInFlightRef = useRef<Set<string>>(new Set());
+  const subtitleResolvedRef = useRef<Set<string>>(new Set());
+  const subtitleSchedulerRef = useRef<SubtitleScheduler | null>(null);
+  const activeSubtitleCountryRef = useRef("us");
+  activeSubtitleCountryRef.current = (selectedCountryCode || countryCode || "us").toLowerCase();
 
-  const applySubtitleMap = (subtitleMap: Record<string, string>) => {
+  const subtitleCacheKey = (bundleId: string, country: string) =>
+    `${country.toLowerCase()}:${bundleId}`;
+
+  const applySubtitleMap = (subtitleMap: Record<string, string>, country: string) => {
     if (!subtitleMap || Object.keys(subtitleMap).length === 0) {
       return;
     }
 
-    Object.assign(subtitleCacheRef.current, subtitleMap);
+    for (const [bundleId, subtitle] of Object.entries(subtitleMap)) {
+      subtitleCacheRef.current[subtitleCacheKey(bundleId, country)] = subtitle;
+    }
+    if (country.toLowerCase() !== activeSubtitleCountryRef.current) {
+      return;
+    }
 
     setTopApps((prev) => prev.map((app) => ({
       ...app,
@@ -108,49 +117,46 @@ export default function SearchPage() {
     });
   };
 
-  const requestSubtitleBatches = async (bundleIds: string[], country: string) => {
-    const uniqueBundleIds = Array.from(new Set(bundleIds.filter(Boolean)));
-    const pendingBundleIds = uniqueBundleIds.filter(
-      (bundleId) => !subtitleCacheRef.current[bundleId] && !subtitleInFlightRef.current.has(bundleId)
-    );
+  useEffect(() => {
+    const scheduler = new SubtitleScheduler({
+      request: (bundleIds, country) => goServiceClient.getAppSubtitles(bundleIds, country),
+      isResolved: (bundleId, country) => subtitleResolvedRef.current.has(subtitleCacheKey(bundleId, country)),
+      onResult: (subtitles, country, bundleIds) => {
+        applySubtitleMap(subtitles, country);
+        bundleIds.forEach((bundleId) => subtitleResolvedRef.current.add(subtitleCacheKey(bundleId, country)));
+      },
+      onError: (error) => console.error("Failed to request app subtitles:", error),
+    });
+    subtitleSchedulerRef.current = scheduler;
+    return () => {
+      scheduler.dispose();
+      if (subtitleSchedulerRef.current === scheduler) subtitleSchedulerRef.current = null;
+    };
+  }, []);
 
-    if (pendingBundleIds.length === 0) {
-      return;
-    }
-
-    pendingBundleIds.forEach((bundleId) => subtitleInFlightRef.current.add(bundleId));
-
-    try {
-      for (let index = 0; index < pendingBundleIds.length; index += SUBTITLE_REQUEST_BATCH_SIZE) {
-        const batch = pendingBundleIds.slice(index, index + SUBTITLE_REQUEST_BATCH_SIZE);
-        const subtitles = await goServiceClient.getAppSubtitles(batch, country);
-        applySubtitleMap(subtitles);
-      }
-    } catch (error) {
-      console.error("Failed to request subtitle batches:", error);
-    } finally {
-      pendingBundleIds.forEach((bundleId) => subtitleInFlightRef.current.delete(bundleId));
-    }
-  };
-
-  const scheduleVisibleSubtitleFetch = (apps: AppSearchResult[], country: string, scrollTop?: number) => {
-    if (!apps || apps.length === 0) {
-      return;
-    }
-
+  const scheduleVisibleSubtitleFetch = (apps: AppSearchResult[], country: string) => {
     const container = listContainerRef.current;
-    const containerScrollTop = scrollTop ?? container?.scrollTop ?? 0;
-    const containerHeight = container?.clientHeight ?? 800;
-    const approxRowHeight = 86;
-    const startRow = Math.max(0, Math.floor(containerScrollTop / approxRowHeight));
-    const visibleRows = Math.max(1, Math.ceil(containerHeight / approxRowHeight));
-    const startIndex = startRow * 2;
-    const endIndex = Math.min(
-      apps.length,
-      startIndex + SUBTITLE_VIEWPORT_BATCH_SIZE + visibleRows * 2 + SUBTITLE_VIEWPORT_PREFETCH_SIZE
-    );
-    const targetBundleIds = apps.slice(startIndex, endIndex).map((app) => app.bundle_id);
-    void requestSubtitleBatches(targetBundleIds, country);
+    if (!container || country.toLowerCase() !== activeSubtitleCountryRef.current) return;
+    const bundleIds = new Set(apps.filter((app) => !app.subtitle).map((app) => app.bundle_id));
+    const cards = Array.from(container.querySelectorAll<HTMLElement>("[data-bundle-id]"))
+      .filter((element) => bundleIds.has(element.dataset.bundleId || ""))
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return { bundleId: element.dataset.bundleId!, top: rect.top, bottom: rect.bottom };
+      });
+    const bounds = container.getBoundingClientRect();
+    const { visible, prefetch } = selectViewportSubtitles(cards, {
+      top: Math.max(0, bounds.top),
+      bottom: Math.min(window.innerHeight, bounds.bottom),
+    });
+    const suggestionCards = showSuggestions ? suggestionItemRefs.current.flatMap((element, index) => {
+      const app = suggestions[index];
+      if (!element || !app || app.subtitle) return [];
+      const rect = element.getBoundingClientRect();
+      return [{ bundleId: app.bundle_id, top: rect.top, bottom: rect.bottom }];
+    }) : [];
+    const suggested = selectViewportSubtitles(suggestionCards, { top: 0, bottom: window.innerHeight }, 0).visible;
+    subtitleSchedulerRef.current?.replace([...suggested, ...visible], prefetch, country);
   };
 
   // Available countries for store region selection
@@ -177,10 +183,9 @@ export default function SearchPage() {
       const apps = await goServiceClient.getTopApps(effectiveCountryCode, 50, storeType);
       const hydratedApps = apps.map((app) => ({
         ...app,
-        subtitle: app.subtitle || subtitleCacheRef.current[app.bundle_id] || app.subtitle,
+        subtitle: app.subtitle || subtitleCacheRef.current[subtitleCacheKey(app.bundle_id, effectiveCountryCode)] || app.subtitle,
       }));
       setTopApps(hydratedApps);
-      scheduleVisibleSubtitleFetch(hydratedApps, effectiveCountryCode, 0);
     } catch (error: any) {
       console.error("Failed to load top apps:", error);
       setTopAppsError(error.toString());
@@ -336,10 +341,9 @@ export default function SearchPage() {
       const filteredResults = results.filter(app => app.id !== 0 && app.name !== "");
       const hydratedResults = filteredResults.map((app) => ({
         ...app,
-        subtitle: app.subtitle || subtitleCacheRef.current[app.bundle_id] || app.subtitle,
+        subtitle: app.subtitle || subtitleCacheRef.current[subtitleCacheKey(app.bundle_id, effectiveCountryCode)] || app.subtitle,
       }));
       setSuggestions(hydratedResults);
-      void requestSubtitleBatches(hydratedResults.map((app) => app.bundle_id), effectiveCountryCode);
       setSelectedSuggestionIndex(-1);
       if (shouldShowSuggestionsRef.current) {
         setShowSuggestions(true);
@@ -392,13 +396,12 @@ export default function SearchPage() {
       const filteredResults = results.filter(app => app.id !== 0 && app.name !== "");
       const hydratedResults = filteredResults.map((app) => ({
         ...app,
-        subtitle: app.subtitle || subtitleCacheRef.current[app.bundle_id] || app.subtitle,
+        subtitle: app.subtitle || subtitleCacheRef.current[subtitleCacheKey(app.bundle_id, effectiveCountryCode)] || app.subtitle,
       }));
       setAppStoreResults(hydratedResults);
       setDisplayedResults(hydratedResults.slice(0, DISPLAY_PAGE_SIZE));
       setDisplayPage(1);
       setHasMore(hydratedResults.length > DISPLAY_PAGE_SIZE);
-      scheduleVisibleSubtitleFetch(hydratedResults, effectiveCountryCode, 0);
     } catch (error: any) {
       console.error('[Search] Failed:', error);
       if (error instanceof TokenExpiredError) {
@@ -425,9 +428,6 @@ export default function SearchPage() {
       setDisplayPage(nextPage);
       setHasMore(appStoreResults.length > newDisplayedResults.length);
       setIsLoadingMore(false);
-
-      const effectiveCountryCode = selectedCountryCode || countryCode || 'US';
-      scheduleVisibleSubtitleFetch(appStoreResults, effectiveCountryCode, listContainerRef.current?.scrollTop ?? 0);
     }, 500);
   };
 
@@ -571,7 +571,7 @@ export default function SearchPage() {
     setShowVersionDialog(true);
   };
 
-  const handleDownloadVersion = async (_versionId: string) => {
+  const handleDownloadVersion = async (versionId: string) => {
     if (!versionDialogApp) return;
 
     const accountState = useAccountStore.getState();
@@ -584,7 +584,9 @@ export default function SearchPage() {
     try {
       const downloadDir = await invoke<string>("get_download_directory");
       const iconUrl = versionDialogApp.icon_url || undefined;
-      await startDownload(versionDialogApp.bundle_id, email, downloadDir, versionDialogApp.name, iconUrl);
+      await startDownload(versionDialogApp.bundle_id, email, downloadDir, versionDialogApp.name, iconUrl, {
+        externalVersionId: versionId,
+      });
       
       // Close the dialog after initiating download
       setShowVersionDialog(false);
@@ -643,23 +645,29 @@ export default function SearchPage() {
       return;
     }
 
-    let ticking = false;
+    let frame: number | null = null;
     const handleListScroll = () => {
-      if (ticking) {
+      if (frame !== null) {
         return;
       }
-      ticking = true;
-      requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        frame = null;
         const effectiveCountryCode = selectedCountryCode || countryCode || 'US';
         const sourceApps = searchQuery ? displayedResults : topApps;
-        scheduleVisibleSubtitleFetch(sourceApps, effectiveCountryCode, container.scrollTop);
-        ticking = false;
+        scheduleVisibleSubtitleFetch(sourceApps, effectiveCountryCode);
       });
     };
 
     container.addEventListener('scroll', handleListScroll, { passive: true });
-    return () => container.removeEventListener('scroll', handleListScroll);
-  }, [countryCode, selectedCountryCode, searchQuery, displayedResults, topApps]);
+    const observer = new ResizeObserver(handleListScroll);
+    observer.observe(container);
+    handleListScroll();
+    return () => {
+      container.removeEventListener('scroll', handleListScroll);
+      observer.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [countryCode, selectedCountryCode, searchQuery, displayedResults, topApps, showSuggestions, suggestions, showAppDetails]);
 
   const selectedAppDeviceCompatibility = getDeviceCompatibility(selectedStoreApp?.supported_devices);
 
