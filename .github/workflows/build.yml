@@ -360,16 +360,18 @@ jobs:
 
       - name: Unzip apps
         run: |
+          df -h /
           mkdir -p work
           unzip -q artifacts/macos-arm64/*.zip -d work/arm64
           unzip -q artifacts/macos-x64/*.zip -d work/x64
+          rm -f artifacts/macos-arm64/*.zip artifacts/macos-x64/*.zip
 
       - name: Create Universal .app and DMG
         run: |
           ARM_APP=$(ls -d work/arm64/*.app | head -n 1)
           X64_APP=$(ls -d work/x64/*.app | head -n 1)
           [ -z "$ARM_APP" -o -z "$X64_APP" ] && echo "Apps not found" && exit 1
-          cp -R "$ARM_APP" work/universal.app
+          ditto "$ARM_APP" work/universal.app
           BIN_NAME=$(basename "$(ls work/universal.app/Contents/MacOS/* | head -n 1)")
           lipo -create \
             "$ARM_APP/Contents/MacOS/$BIN_NAME" \
@@ -381,13 +383,23 @@ jobs:
             lipo -create "$ARM_APP/$GO_REL" "$X64_APP/$GO_REL" -output work/universal.app/$GO_REL
             chmod +x work/universal.app/$GO_REL
           fi
-          hdiutil create -volname iPAGet -srcfolder work/universal.app -ov -format UDZO universal-macOS-Universal.dmg
+          # Free the per-architecture copies before hdiutil needs working space.
+          rm -rf work/arm64 work/x64
+          df -h /
+          if ! hdiutil create -volname iPAGet -srcfolder work/universal.app -ov -format UDZO universal-macOS-Universal.dmg; then
+            echo 'disk image creation failed, publishing a zip of the universal app instead'
+            ditto -c -k --sequesterRsrc --keepParent work/universal.app universal-macOS-Universal.app.zip
+          fi
+          rm -rf work
+          df -h /
 
       - name: Upload Universal DMG
         uses: actions/upload-artifact@v4
         with:
           name: macos-universal-dmg
-          path: universal-macOS-Universal.dmg
+          path: |
+            universal-macOS-Universal.dmg
+            universal-macOS-Universal.app.zip
           if-no-files-found: error
 
   release:
