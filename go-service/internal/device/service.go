@@ -896,8 +896,8 @@ func (s *Service) GenerateRandomDeviceInfo() models.DeviceInfo {
 		BuildVersion:             fmt.Sprintf("%dH%d", randomInt(30)+20, randomInt(100)),
 		FirmwareVersion:          fmt.Sprintf("iBoot-%d.%d.%d", randomInt(15000)+10000, randomInt(200)+100, randomInt(100)),
 		SerialNumber:             serialNumber,
-		IMEI:                     fmt.Sprintf("35%d", randomInt(10000000000000)),
-		IMEI2:                    fmt.Sprintf("35%d", randomInt(10000000000000)),
+		IMEI:                     fmt.Sprintf("35%d", randomInt64(10000000000000)),
+		IMEI2:                    fmt.Sprintf("35%d", randomInt64(10000000000000)),
 		PhoneNumber:              fmt.Sprintf("+86138%08d", randomInt(100000000)),
 		RegionInfo:               selectedRegion,
 		ModelNumber:              fmt.Sprintf("ML%s%d", randomString(1), randomInt(10)),
@@ -920,7 +920,7 @@ func (s *Service) GenerateRandomDeviceInfo() models.DeviceInfo {
 		WiFiAddress:              fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256)),
 		EthernetAddress:          fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256)),
 		BluetoothAddress:         fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256), randomInt(256)),
-		IMSI:                     fmt.Sprintf("4600%d", randomInt(10000000000)),
+		IMSI:                     fmt.Sprintf("4600%d", randomInt64(10000000000)),
 		SIMStatus:                "kCTSIMSupportSIMStatusReady",
 		SIMTrayStatus:            "kCTSIMSupportSIMTrayInsertedWithSIM",
 		SIM1Info:                 "ChinaTelecom_USIM_cn",
@@ -1118,6 +1118,15 @@ func randomInt(max int) int {
 		return 0
 	}
 	return rand.Intn(max)
+}
+
+// randomInt64 mirrors randomInt for ranges that exceed the 32-bit int limit
+// used by some supported build targets.
+func randomInt64(max int64) int64 {
+	if max <= 0 {
+		return 0
+	}
+	return rand.Int63n(max)
 }
 
 func randomString(length int) string {

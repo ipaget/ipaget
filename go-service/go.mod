@@ -27,7 +27,7 @@ replace (
 
 require (
 	github.com/1Password/connect-sdk-go v1.5.4-0.20250417152128-c154b387248b // indirect
-	github.com/1password/onepassword-sdk-go v0.4.1-beta.1 // indirect
+	github.com/1password/onepassword-sdk-go v0.4.1 // indirect
 	github.com/99designs/go-keychain v0.0.0-20191008050251-8e49817e8af4 // indirect
 	github.com/Masterminds/semver v1.5.0 // indirect
 	github.com/andybalholm/brotli v1.2.1 // indirect
@@ -91,7 +91,7 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
-	github.com/stangelandcl/ppmd v0.1.0 // indirect
+	github.com/stangelandcl/ppmd v0.1.1 // indirect
 	github.com/tadglines/go-pkgs v0.0.0-20210623144937-b983b20f54f9 // indirect
 	github.com/tetratelabs/wabin v0.0.0-20230304001439-f6f874872834 // indirect
 	github.com/tetratelabs/wazero v1.11.0 // indirect
