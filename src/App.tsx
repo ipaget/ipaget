@@ -26,6 +26,7 @@ import AppLibraryPage from "./pages/AppLibraryPage";
 import DebugPage from "./pages/DebugPage";
 import DevicesPage from "./pages/DevicesPage";
 import EditorPage from "./pages/EditorPage";
+import PlistEditorPage from "./pages/PlistEditorPage";
 import LoginDialog from "./components/LoginDialog";
 import ErrorDialog from "./components/ErrorDialog";
 import Toast from "./components/Toast";
@@ -789,6 +790,7 @@ function AppContent() {
                   <Route path="/library" element={<AppLibraryPage />} />
                   <Route path="/signing" element={<SigningPage />} />
                   <Route path="/editor" element={<EditorPage />} />
+                  <Route path="/plist" element={<PlistEditorPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                 </Route>
               </Routes>

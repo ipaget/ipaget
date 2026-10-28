@@ -2,6 +2,22 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles.css";
 import "./i18n";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
+
+const appWindow = getCurrentWindow();
+
+document.getElementById("loader-minimize")?.addEventListener("click", () => {
+  void appWindow.minimize().catch((error) => {
+    console.error("Failed to minimize window:", error);
+  });
+});
+
+document.getElementById("loader-close")?.addEventListener("click", () => {
+  void appWindow.close().catch((error) => {
+    console.error("Failed to close window:", error);
+  });
+});
 
 // Update loader status
 export function updateLoaderStatus(status: string) {
@@ -12,7 +28,15 @@ export function updateLoaderStatus(status: string) {
 }
 
 // Hide loader
-export function hideLoader() {
+export async function hideLoader() {
+  if (appWindow.label === "main") {
+    try {
+      await invoke("finish_main_window_startup");
+    } catch (error) {
+      console.error("Failed to expand main window after startup:", error);
+    }
+  }
+
   const loader = document.getElementById('app-loader');
   const titlebar = document.getElementById('loader-titlebar');
   

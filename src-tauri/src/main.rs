@@ -11,7 +11,6 @@ use commands::*;
 use config::load_app_config;
 use state::AppState;
 use std::fs;
-#[cfg(not(debug_assertions))]
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -29,20 +28,13 @@ fn main() {
     let config = load_app_config(&config_file);
     let go_ios_path = config.go_ios_path.map(|s| PathBuf::from(s));
 
-    // Decide service port: dev uses 8765 without checking; prod checks 127.0.0.1:8765 and falls back to a random available port
+    // Prefer the conventional port, then select another free local port.
     let selected_port: u16 = {
-        #[cfg(debug_assertions)]
-        {
-            8765
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            let default_port: u16 = 8765;
-            if is_port_free(default_port) {
-                default_port
-            } else {
-                find_available_port(20000, 60000).unwrap_or(default_port)
-            }
+        let default_port: u16 = 8765;
+        if is_port_free(default_port) {
+            default_port
+        } else {
+            find_available_port(20000, 60000).unwrap_or(default_port)
         }
     };
 
@@ -53,6 +45,7 @@ fn main() {
         config_file,
         go_ios_path: Mutex::new(go_ios_path),
         go_service_process: Mutex::new(None),
+        go_service_start_lock: tokio::sync::Mutex::new(()),
         go_service_port: selected_port,
         selected_account_email: Mutex::new(config.selected_account_email),
     };
@@ -132,44 +125,26 @@ fn main() {
                     tauri::WebviewUrl::App("/".into())
                 )
                 .title("iPAGet")
-                .inner_size(1200.0, 800.0)
-                .min_inner_size(900.0, 600.0)
-                .resizable(true)
+                .inner_size(520.0, 360.0)
+                .min_inner_size(480.0, 320.0)
+                .resizable(false)
                 .maximizable(false)
                 .decorations(false)
+                .center()
                 .build() {
                     log::error!("Failed to create main window: {}", e);
                 }
             }
 
-            #[cfg(not(debug_assertions))]
-            {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    match start_go_service(handle).await {
-                        Ok(port) => log::info!("Go service started on port {}", port),
-                        Err(e) => log::error!("Failed to start Go service: {}", e),
-                    }
-                });
-            }
-            #[cfg(debug_assertions)]
-            {
-                let _ = app;
-            }
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                #[cfg(not(debug_assertions))]
                 {
                     let app_handle = window.app_handle().clone();
                     tauri::async_runtime::spawn(async move {
                         let _ = stop_go_service(app_handle).await;
                     });
-                }
-                #[cfg(debug_assertions)]
-                {
-                    let _ = window;
                 }
             }
         })
@@ -188,9 +163,14 @@ fn main() {
             delete_ipa,
             import_ipa_files,
             is_dev_mode,
+            restart_main_frontend,
+            restart_dev_host,
+            finish_main_window_startup,
             open_main_window,
             create_installer_window,
             open_debug_window,
+            open_text_in_default_editor,
+            capture_primary_screen_to_clipboard,
             get_settings,
             save_settings,
             open_config_directory,
@@ -202,7 +182,6 @@ fn main() {
         .expect("error while running tauri application");
 }
 
-#[cfg(not(debug_assertions))]
 fn is_port_free(port: u16) -> bool {
     match TcpListener::bind(("127.0.0.1", port)) {
         Ok(listener) => {
@@ -213,7 +192,6 @@ fn is_port_free(port: u16) -> bool {
     }
 }
 
-#[cfg(not(debug_assertions))]
 fn find_available_port(start: u16, end: u16) -> Option<u16> {
     if end <= start { return None; }
     let range = end - start;

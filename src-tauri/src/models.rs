@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_ANISETTE_URL: &str = "https://new.ani.sidestore.io";
+
+fn default_anisette_url() -> String {
+    DEFAULT_ANISETTE_URL.to_string()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IpaFileInfo {
     pub name: String,
@@ -21,7 +27,7 @@ pub struct SavedAccount {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppSettings {
     pub language: String,
-    #[serde(default)]
+    #[serde(default = "default_anisette_url")]
     pub anisette_url: String,
     #[serde(default)]
     pub proxy_url: String,
@@ -31,7 +37,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             language: "en".to_string(),
-            anisette_url: String::new(),
+            anisette_url: default_anisette_url(),
             proxy_url: String::new(),
         }
     }

@@ -10,6 +10,7 @@ pub struct AppState {
     pub config_file: PathBuf,
     pub go_ios_path: Mutex<Option<PathBuf>>,
     pub go_service_process: Mutex<Option<Child>>,
+    pub go_service_start_lock: tokio::sync::Mutex<()>,
     pub go_service_port: u16,
     pub selected_account_email: Mutex<Option<String>>,
 }

@@ -29,6 +29,8 @@ tauri-plugin-log = "2"
 log = "0.4"
 zip = "0.6"
 notify = "6.1"
+xcap = "0.7"
+arboard = { version = "3", features = ["image-data"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

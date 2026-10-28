@@ -2,38 +2,44 @@ use crate::state::AppState;
 use log::info;
 use tauri::{AppHandle, Manager};
 
-#[cfg(not(debug_assertions))]
 use log::error;
 
-#[cfg(not(debug_assertions))]
 use std::process::{Command, Stdio};
 
-#[cfg(all(debug_assertions, target_os = "windows"))]
-use std::process::Command;
+#[cfg(debug_assertions)]
+use std::path::PathBuf;
 
 #[tauri::command]
 pub async fn start_go_service(app: AppHandle) -> Result<u16, String> {
     let state = app.state::<AppState>();
-    
-    // In development mode, assume service is already started by start-dev script
-    #[cfg(debug_assertions)]
+
+    let _start_lock = state.go_service_start_lock.lock().await;
+    let port = state.go_service_port;
     {
-        return Ok(state.go_service_port);
-    }
-    
-    // Production mode: start the service if not already running
-    #[cfg(not(debug_assertions))]
-    {
-        // Check if already running
-        {
-            let process_lock = state.go_service_process.lock().unwrap();
-            if process_lock.is_some() {
-                return Ok(state.go_service_port);
-            }
+        let process_lock = state.go_service_process.lock().unwrap();
+        if process_lock.is_some() {
+            return Ok(port);
         }
-        
-        let port = state.go_service_port;
-        
+    }
+
+        #[cfg(debug_assertions)]
+        let mut cmd = {
+            let service_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .ok_or("Failed to locate project directory")?
+                .join("go-service");
+            if !service_dir.exists() {
+                return Err(format!("Go service directory not found at: {:?}", service_dir));
+            }
+            let mut command = Command::new("go");
+            command
+                .args(["run", "github.com/air-verse/air@v1.62.0"])
+                .current_dir(service_dir);
+            command
+        };
+
+        #[cfg(not(debug_assertions))]
+        let mut cmd = {
         let service_path = app
             .path()
             .resource_dir()
@@ -47,7 +53,10 @@ pub async fn start_go_service(app: AppHandle) -> Result<u16, String> {
             error!("Go service binary not found at: {:?}", service_path);
             return Err(format!("Go service binary not found at: {:?}", service_path));
         }
-            // Get config directory from AppState
+        Command::new(&service_path)
+        };
+
+        // Get config directory from AppState
         let config_dir = state.config_file
             .parent()
             .ok_or("Failed to get config directory")?
@@ -56,7 +65,6 @@ pub async fn start_go_service(app: AppHandle) -> Result<u16, String> {
 
         let proxy_url = state.settings.lock().unwrap().proxy_url.trim().to_string();
         
-        let mut cmd = Command::new(&service_path);
         cmd.env("PORT", port.to_string())
             .env("CONFIG_DIR", config_dir)  // Pass config directory to go-service
             .stdout(Stdio::null())
@@ -82,7 +90,8 @@ pub async fn start_go_service(app: AppHandle) -> Result<u16, String> {
             format!("Failed to start Go service: {}", e)
         })?;
         
-        // Store the process handle
+        // Store the process handle before releasing the lock so concurrent
+        // frontend requests cannot spawn a second service.
         {
             let mut process_lock = state.go_service_process.lock().unwrap();
             *process_lock = Some(child);
@@ -92,7 +101,10 @@ pub async fn start_go_service(app: AppHandle) -> Result<u16, String> {
         
         // Poll health endpoint until service is ready
         let health_url = format!("http://127.0.0.1:{}/health", port);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .map_err(|e| format!("Failed to create health check client: {}", e))?;
         let max_attempts = 30; // 30 attempts * 200ms = 6 seconds max
         let mut ready = false;
         
@@ -118,13 +130,20 @@ pub async fn start_go_service(app: AppHandle) -> Result<u16, String> {
         }
         
         if !ready {
+            let child = {
+                let mut process_lock = state.go_service_process.lock().unwrap();
+                process_lock.take()
+            };
+            if let Some(mut child) = child {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             error!("Go service failed to become ready after {} attempts", max_attempts);
             return Err("Go service failed to become ready in time".to_string());
         }
         
-        info!("Go service started successfully on port {}", port);
-        return Ok(port);
-    }
+    info!("Go service started successfully on port {}", port);
+    Ok(port)
 }
 
 #[tauri::command]
@@ -140,7 +159,7 @@ pub async fn stop_go_service(app: AppHandle) -> Result<(), String> {
             use std::os::windows::process::CommandExt;
             const CREATE_NO_WINDOW: u32 = 0x08000000;
             let _ = Command::new("taskkill")
-                .args(&["/PID", &child.id().to_string(), "/F"])
+                .args(["/PID", &child.id().to_string(), "/T", "/F"])
                 .creation_flags(CREATE_NO_WINDOW)
                 .status();
         }

@@ -253,41 +253,5 @@
     </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-    <script>
-      // Window controls for loader
-      (function() {
-        const loaderMinimize = document.getElementById('loader-minimize');
-        const loaderClose = document.getElementById('loader-close');
-        
-        function initWindowControls() {
-          if (window.__TAURI__ && window.__TAURI__.window) {
-            const { getCurrent } = window.__TAURI__.window;
-            const appWindow = getCurrent();
-            
-            if (loaderMinimize) {
-              loaderMinimize.addEventListener('click', () => {
-                appWindow.minimize();
-              });
-            }
-            
-            if (loaderClose) {
-              loaderClose.addEventListener('click', () => {
-                appWindow.close();
-              });
-            }
-          } else {
-            // Retry after a short delay if Tauri is not ready
-            setTimeout(initWindowControls, 100);
-          }
-        }
-        
-        // Initialize window controls when DOM is ready
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', initWindowControls);
-        } else {
-          initWindowControls();
-        }
-      })();
-    </script>
   </body>
 </html>
