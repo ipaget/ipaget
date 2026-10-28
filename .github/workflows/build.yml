@@ -135,6 +135,13 @@ jobs:
             librsvg2-dev \
             desktop-file-utils \
             appstream \
+            libpipewire-0.3-dev \
+            libdbus-1-dev \
+            libxcb1-dev \
+            libxcb-randr0-dev \
+            libxrandr-dev \
+            libssl-dev \
+            pkg-config \
             fuse
 
       - name: Setup Rust
@@ -154,18 +161,12 @@ jobs:
       - name: Build frontend (vite)
         run: pnpm run build
 
-      - name: Patch tauri.conf.json beforeBuildCommand to use build.sh
-        run: |
-          jq '.build.beforeBuildCommand = "npm run build && cd go-service && bash build.sh"' src-tauri/tauri.conf.json > src-tauri/tauri.ci.conf.json
-
       - name: Build Go service (bash)
         run: |
           cd go-service
           bash build.sh
 
       - name: Build Tauri (appimage)
-        env:
-          TAURI_CONFIG: ${{ github.workspace }}/src-tauri/tauri.ci.conf.json
         run: |
           pnpm tauri build --bundles appimage --ci
 
@@ -224,18 +225,12 @@ jobs:
       - name: Build frontend (vite)
         run: pnpm run build
 
-      - name: Patch tauri.conf.json beforeBuildCommand to use build.sh
-        run: |
-          jq '.build.beforeBuildCommand = "npm run build && cd go-service && bash build.sh"' src-tauri/tauri.conf.json > src-tauri/tauri.ci.conf.json
-
       - name: Build Go service (bash)
         run: |
           cd go-service
           bash build.sh
 
       - name: Build Tauri (dmg+app)
-        env:
-          TAURI_CONFIG: ${{ github.workspace }}/src-tauri/tauri.ci.conf.json
         run: |
           pnpm tauri build --bundles app,dmg --target aarch64-apple-darwin --ci
 
@@ -299,18 +294,12 @@ jobs:
       - name: Build frontend (vite)
         run: pnpm run build
 
-      - name: Patch tauri.conf.json beforeBuildCommand to use build.sh
-        run: |
-          jq '.build.beforeBuildCommand = "npm run build && cd go-service && bash build.sh"' src-tauri/tauri.conf.json > src-tauri/tauri.ci.conf.json
-
       - name: Build Go service (bash)
         run: |
           cd go-service
           bash build.sh
 
       - name: Build Tauri (dmg+app)
-        env:
-          TAURI_CONFIG: ${{ github.workspace }}/src-tauri/tauri.ci.conf.json
         run: |
           pnpm tauri build --bundles app,dmg --target x86_64-apple-darwin --ci
 
