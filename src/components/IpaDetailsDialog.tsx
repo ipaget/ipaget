@@ -1,5 +1,5 @@
 import { useState, useEffect, Fragment } from "react";
-import { X, Loader2, FileText, Shield } from "lucide-react";
+import { X, Loader2, FileText, Shield, Search } from "lucide-react";
 import { Dialog, Transition, Tab } from "@headlessui/react";
 import { useTranslation } from "react-i18next";
 import EntitlementsView from "./EntitlementsView";
@@ -28,6 +28,13 @@ export default function IpaDetailsDialog({
   const [isModified, setIsModified] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  useEffect(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+  }, [view]);
 
   useEffect(() => {
     if (filePath) {
@@ -114,19 +121,53 @@ export default function IpaDetailsDialog({
               leaveTo="opacity-0 scale-100"
             >
               <Dialog.Panel className="w-full max-w-2xl max-h-[75vh] transform overflow-hidden rounded-2xl bg-white text-left align-middle shadow-xl transition-all flex flex-col">
-                <div className="flex items-center justify-between p-6 pb-4 border-b border-gray-200">
+                <div className="flex items-center justify-between gap-3 p-6 pb-4 border-b border-gray-200">
                   <Dialog.Title
                     as="h3"
                     className="text-lg font-medium leading-6 text-gray-900"
                   >
                     {t("ipaDetails.title")}
                   </Dialog.Title>
-                  <button
-                    onClick={onClose}
-                    className="text-gray-400 hover:text-gray-500"
-                  >
-                    <X size={20} />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {view === "properties" && (
+                      <>
+                        {searchOpen && (
+                          <input
+                            autoFocus
+                            value={searchQuery}
+                            onChange={(event) => setSearchQuery(event.target.value)}
+                            placeholder={t("ipaDetails.properties.searchProperties")}
+                            className="h-9 w-44 rounded-full border border-gray-200 bg-gray-50 px-4 text-sm text-gray-700 placeholder:text-gray-400 transition-all focus:border-primary-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary-100 md:w-56"
+                          />
+                        )}
+                        <button
+                          type="button"
+                          aria-label={t("ipaDetails.properties.searchProperties")}
+                          onClick={() => {
+                            setSearchOpen((open) => {
+                              if (open) {
+                                setSearchQuery("");
+                              }
+                              return !open;
+                            });
+                          }}
+                          className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors ${
+                            searchOpen
+                              ? "bg-primary-50 text-primary-600"
+                              : "text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                          }`}
+                        >
+                          <Search size={18} />
+                        </button>
+                      </>
+                    )}
+                    <button
+                      onClick={onClose}
+                      className="text-gray-400 hover:text-gray-500"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex-1 px-4 pb-4 pt-2">
@@ -221,7 +262,7 @@ export default function IpaDetailsDialog({
                     )}
                     {view === "properties" && (
                       <div className="rounded-xl bg-white p-3 h-[450px] overflow-y-auto scrollbar-thin">
-                        <PropertiesView properties={details.properties || {}} />
+                        <PropertiesView properties={details.properties || {}} query={searchQuery} />
                       </div>
                     )}
                   </>
