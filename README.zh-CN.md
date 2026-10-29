@@ -3,8 +3,10 @@
 **在电脑上管理 iPhone 与 iPad 的应用 —— 支持 Windows、macOS 和 Linux。**
 
 [![build](https://github.com/ipaget/ipaget/actions/workflows/build.yml/badge.svg)](https://github.com/ipaget/ipaget/actions/workflows/build.yml)
-[![release](https://img.shields.io/github/v/release/ipaget/ipaget?sort=semver)](https://github.com/ipaget/ipaget/releases)
-[![downloads](https://img.shields.io/github/downloads/ipaget/ipaget/total)](https://github.com/ipaget/ipaget/releases)
+[![release](https://img.shields.io/github/v/tag/ipaget/ipaget?sort=semver&label=release)](https://github.com/ipaget/ipaget/releases)
+[![commits](https://img.shields.io/github/commit-activity/m/ipaget/ipaget?label=commits)](https://github.com/ipaget/ipaget/commits/master)
+<!-- 发布 Release 后下载计数徽章才有效，可替换上面的 commits 徽章：
+[![downloads](https://img.shields.io/github/downloads/ipaget/ipaget/total)](https://github.com/ipaget/ipaget/releases) -->
 [![license](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2ea44f)](#下载)
 [![stars](https://img.shields.io/github/stars/ipaget/ipaget)](https://github.com/ipaget/ipaget/stargazers)

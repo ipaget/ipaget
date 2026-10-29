@@ -3,8 +3,10 @@
 **Your iOS apps and devices, from your desktop — Windows, macOS and Linux.**
 
 [![build](https://github.com/ipaget/ipaget/actions/workflows/build.yml/badge.svg)](https://github.com/ipaget/ipaget/actions/workflows/build.yml)
-[![release](https://img.shields.io/github/v/release/ipaget/ipaget?sort=semver)](https://github.com/ipaget/ipaget/releases)
-[![downloads](https://img.shields.io/github/downloads/ipaget/ipaget/total)](https://github.com/ipaget/ipaget/releases)
+[![release](https://img.shields.io/github/v/tag/ipaget/ipaget?sort=semver&label=release)](https://github.com/ipaget/ipaget/releases)
+[![commits](https://img.shields.io/github/commit-activity/m/ipaget/ipaget?label=commits)](https://github.com/ipaget/ipaget/commits/master)
+<!-- Once the release is published, the download counter works and can replace the commits badge:
+[![downloads](https://img.shields.io/github/downloads/ipaget/ipaget/total)](https://github.com/ipaget/ipaget/releases) -->
 [![license](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2ea44f)](#download)
 [![stars](https://img.shields.io/github/stars/ipaget/ipaget)](https://github.com/ipaget/ipaget/stargazers)
