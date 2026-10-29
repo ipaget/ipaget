@@ -21,10 +21,14 @@
 
 [中文说明 / Chinese README](README.zh-CN.md)
 
-iPAGet keeps the apps on your iPhone and iPad in one window: search the App Store, download a
-specific build, install it on a connected device, and re-sign it with your own certificate.
-It runs entirely on your computer and talks to Apple directly — no account data passes through
-any third-party service.
+What is installed on your iPhone can also live on your computer. iPAGet downloads apps from the
+App Store as IPA files — including the exact historical version you ask for — installs them back
+onto a device, and re-signs them with your own certificate. Old versions, backups, reinstalls and
+self-signed installs all happen in one window.
+
+It runs on Windows, macOS and Linux: no Mac needed, and no jailbreak. Credentials stay on your own
+machine in your operating system keychain, talking to Apple directly, with no third-party service
+in between.
 
 ---
 
