@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="620" viewBox="0 0 960 620" role="img" aria-label="Screenshot placeholder: version history">
+  <rect width="960" height="620" fill="#f6f8fa"/>
+  <rect x="24" y="24" width="912" height="572" rx="16" fill="none" stroke="#d0d7de" stroke-width="3" stroke-dasharray="14 10"/>
+  <text x="480" y="298" fill="#24292f" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="38" font-weight="600" text-anchor="middle">Version history</text>
+  <text x="480" y="344" fill="#57606a" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" text-anchor="middle">placeholder 960 x 620 - replace docs/images/version-history.svg</text>
+</svg>
