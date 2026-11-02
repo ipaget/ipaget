@@ -17,7 +17,7 @@ interface DeleteTarget {
 }
 
 export default function SigningPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { showToast } = useToastStore();
   const { showError } = useErrorStore();
   const { 
@@ -109,7 +109,7 @@ export default function SigningPage() {
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
-    return date.toLocaleDateString(undefined, {
+    return date.toLocaleDateString(i18n.language, {
       year: "numeric",
       month: "short",
       day: "numeric",

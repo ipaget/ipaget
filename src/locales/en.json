@@ -150,7 +150,12 @@
     "recentCompleted": "Recent Completed",
     "viewMoreInManager": "View more in library",
     "errorDetailsTitle": "Error details",
-    "errorMessage": "Error message"
+    "errorMessage": "Error message",
+    "clearFinished": "Clear completed and failed items",
+    "errorNetwork": "Network error",
+    "errorAccount": "Account error",
+    "errorUnknown": "Unknown error",
+    "errorGeneric": "Error"
   },
   "library": {
     "title": "App Library",
@@ -465,6 +470,7 @@
     "noCertificate": "No Certificate",
     "expiryDate": "Expires",
     "selectDevice": "Select Device",
+    "requiresIos": "Requires iOS {{version}}+",
     "chooseDevice": "Choose a device",
     "noDevices": "No devices connected",
     "selectCertificate": "Signing Certificate",

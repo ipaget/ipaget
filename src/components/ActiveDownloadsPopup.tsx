@@ -221,14 +221,14 @@ export default function ActiveDownloadsPopup() {
                         {errorTasks.map((task) => {
                             const classification = classifyError(task.error, undefined);
                             const getErrorText = () => {
-                                if (classification === 'network') return '网络错误';
-                                if (classification === 'account') return '账号错误';
+                                if (classification === 'network') return t('downloads.errorNetwork');
+                                if (classification === 'account') return t('downloads.errorAccount');
                                 // For unknown errors, try to extract meaningful info
                                 const errorMsg = task.error;
                                 if (errorMsg) {
-                                    // If it's "An unknown error has occurred", show "未知错误"
+                                    // Apple's "An unknown error has occurred" carries no detail worth showing
                                     if (errorMsg.toLowerCase().includes('unknown error')) {
-                                        return '未知错误';
+                                        return t('downloads.errorUnknown');
                                     }
                                     // For other errors, show a truncated version
                                     if (errorMsg.length > 30) {
@@ -236,7 +236,7 @@ export default function ActiveDownloadsPopup() {
                                     }
                                     return errorMsg;
                                 }
-                                return '错误';
+                                return t('downloads.errorGeneric');
                             };
 							return (
 	<div
@@ -346,7 +346,7 @@ export default function ActiveDownloadsPopup() {
 													<div className="flex-1 min-w-0">
 														<p className="text-xs font-medium text-gray-800 truncate">{name}</p>
 														{task.status === 'cancelled' && (
-															<p className="text-[10px] text-gray-500">已取消</p>
+															<p className="text-[10px] text-gray-500">{t('download.cancelled')}</p>
 														)}
 													</div>
 												</>

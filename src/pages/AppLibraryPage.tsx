@@ -832,7 +832,7 @@ export default function AppLibraryPage() {
               onClick={() => clearableDownloads.forEach((download) => removeDownload(download.id))}
               disabled={clearableDownloads.length === 0}
               className="p-2 text-primary-600 hover:bg-primary-50 rounded-lg transition-colors disabled:opacity-50 disabled:text-gray-400 disabled:hover:bg-transparent"
-              title="清空已完成和失败项"
+              title={t('downloads.clearFinished')}
             >
               <Trash2 size={18} />
             </button>
@@ -964,7 +964,7 @@ export default function AppLibraryPage() {
                     size="md"
                     onClick={() => removeDownload(download.id)}
                   >
-                    确定
+                    {t('common.confirm')}
                   </Button3D>
                 </div>
               </div>

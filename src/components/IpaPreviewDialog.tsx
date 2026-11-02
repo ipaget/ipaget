@@ -42,7 +42,7 @@ export default function IpaPreviewDialog({
   onClose,
   onInstall,
 }: IpaPreviewDialogProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const { certificates, loadCertificates } = useCertificateStore();
   const { connectedDevices } = useDeviceStore();
@@ -378,7 +378,7 @@ export default function IpaPreviewDialog({
                                             <p className="text-xs text-gray-400">
                                               {cert.is_expired ? t("ipaPreview.statusExpired") :
                                                cert.days_until_expiry <= 30 ? `${cert.days_until_expiry}${t("ipaPreview.daysLeft")}` :
-                                               new Date(cert.expires_at).toLocaleDateString()}
+                                               new Date(cert.expires_at).toLocaleDateString(i18n.language)}
                                             </p>
                                           </div>
                                         </div>
@@ -404,7 +404,7 @@ export default function IpaPreviewDialog({
                           </label>
                           {ipaInfo?.minimumOSVersion && (
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">
-                              需要 iOS {ipaInfo.minimumOSVersion}+
+                              {t("ipaPreview.requiresIos", { version: ipaInfo.minimumOSVersion })}
                             </span>
                           )}
                         </div>

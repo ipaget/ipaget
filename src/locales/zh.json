@@ -150,7 +150,12 @@
     "recentCompleted": "最近完成",
     "viewMoreInManager": "去 App 库查看更多",
     "errorDetailsTitle": "错误详情",
-    "errorMessage": "错误信息"
+    "errorMessage": "错误信息",
+    "clearFinished": "清空已完成和失败项",
+    "errorNetwork": "网络错误",
+    "errorAccount": "账号错误",
+    "errorUnknown": "未知错误",
+    "errorGeneric": "错误"
   },
   "library": {
     "title": "App 库",
@@ -465,6 +470,7 @@
     "noCertificate": "无证书信息",
     "expiryDate": "过期时间",
     "selectDevice": "选择设备",
+    "requiresIos": "需要 iOS {{version}}+",
     "chooseDevice": "请选择设备",
     "noDevices": "没有连接的设备",
     "selectCertificate": "签名证书",

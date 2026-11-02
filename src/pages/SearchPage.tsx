@@ -26,7 +26,7 @@ const getDeviceCompatibility = (supportedDevices?: string[]) => {
 };
 
 export default function SearchPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [appStoreResults, setAppStoreResults] = useState<AppSearchResult[]>([]);
@@ -980,7 +980,7 @@ export default function SearchPage() {
                       <div className="p-3 bg-gray-50 rounded-lg">
                         <div className="text-xs text-gray-500 mb-1.5">{t('common.lastUpdated')}</div>
                         <div className="text-sm text-gray-900">
-                          {new Date(selectedStoreApp.current_version_release_date).toLocaleDateString()}
+                          {new Date(selectedStoreApp.current_version_release_date).toLocaleDateString(i18n.language)}
                         </div>
                       </div>
                     )}
