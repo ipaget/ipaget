@@ -34,16 +34,16 @@ Windows、macOS、Linux 都能用：不必为了 iOS 折腾一台 Mac，也不�
 
 | | |
 | :-: | :-: |
-| ![App Store 搜索](docs/images/app-store-search.svg) | ![应用库与下载](docs/images/app-library.svg) |
-| 切换商店地区搜索，查看榜单与应用详情 | 已下载的 IPA，显示进度与传输速度 |
-| ![设备管理](docs/images/device-manager.svg) | ![版本历史](docs/images/version-history.svg) |
-| 已装应用、占用空间、设备信息与文件浏览 | 完整版本历史，选择需要的构建版本 |
-| ![证书与签名](docs/images/signing.svg) | ![IPA 与 plist 编辑器](docs/images/ipa-plist-editor.svg) |
-| 管理开发者账号证书，签名或重签 IPA | 查看包内信息，以树形视图编辑 plist |
-
-> 上图为占位图。把真实截图放进 `docs/images/` 并使用相同文件名（例如
-> `docs/images/app-store-search.png`），再更新本节的链接即可。首图对应
-> `docs/images/hero.svg`（建议尺寸 1600 × 520）。
+| ![App Store 搜索](docs/images/zh/app-store-search.png) | ![应用库](docs/images/zh/app-library.png) |
+| 切换商店地区搜索，查看榜单与应用详情 | 本地 IPA 库：批量安装、导入与删除 |
+| ![应用详情](docs/images/zh/app-detail.png) | ![版本历史](docs/images/zh/version-history.png) |
+| 应用详情与更新说明，直接下载或查看历史版本 | 完整版本历史，按需选择构建版本下载 |
+| ![设备](docs/images/zh/devices.png) | ![设备详情](docs/images/zh/device-details.png) |
+| 已连接设备与已装应用，支持搜索、卸载与安装 IPA | 设备详情：序列号、基带、SIM 与硬件信息一屏看完 |
+| ![签名](docs/images/zh/signing.png) | ![安装 IPA](docs/images/zh/install-ipa.png) |
+| 管理 Apple 开发者证书与自签证书 | 安装前选择签名证书与目标设备 |
+| ![编辑器](docs/images/zh/editor.png) | ![Plist 编辑器](docs/images/zh/plist-editor.png) |
+| 改显示名称、图标与能力开关，导出或直接重签 | 树形编辑 Info.plist，支持 XML 与二进制 |
 
 ---
 
@@ -163,7 +163,8 @@ sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libwebkit2gtk-
 | `src/` | React 界面：页面、组件、状态管理与 `zh` / `en` 文案 |
 | `src-tauri/` | Tauri 外壳：窗口与启动流程、文件系统与桌面命令、打包配置 |
 | `go-service/` | Go 服务：App Store 访问、设备通信、IPA 解析、签名、日志推送 |
-| `docs/images/` | 本 README 使用的截图 |
+| `docs/images/zh` | 中文 README 使用的截图 |
+| `docs/images/en` | 英文 README 使用的截图 |
 | `scripts/` | 开发运行器、开发重启守护与发布前构建脚本 |
 | `ref/` | 实现协议时参考的源码，不参与构建 |
 

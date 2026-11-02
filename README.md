@@ -36,16 +36,16 @@ in between.
 
 | | |
 | :-: | :-: |
-| ![App Store search](docs/images/app-store-search.svg) | ![App library and downloads](docs/images/app-library.svg) |
-| Search any App Store region, with top charts and app details | Downloaded IPA files, with progress and transfer speed |
-| ![Device manager](docs/images/device-manager.svg) | ![Version history](docs/images/version-history.svg) |
-| Installed apps, sizes, device details and file browsing | Full version history — pick the build you need |
-| ![Certificate and signing](docs/images/signing.svg) | ![IPA and plist editor](docs/images/ipa-plist-editor.svg) |
-| Certificates from your developer account, then sign or re-sign | Inspect bundle metadata and edit plists in a tree view |
-
-> The images above are placeholders. Drop real screenshots into `docs/images/` using the same
-> file names (for example `docs/images/app-store-search.png`) and update the links in this
-> section. The hero image is `docs/images/hero.svg` (recommended size 1600 × 520).
+| ![App Store search](docs/images/en/app-store-search.png) | ![App library](docs/images/en/app-library.png) |
+| Search any App Store region, switch iPhone/iPad, browse charts and details | Your local IPA library: batch install, import and delete |
+| ![App detail](docs/images/en/app-detail.png) | ![Version history](docs/images/en/version-history.png) |
+| App details and release notes, download or open the version list | Full version history — pick the build you need |
+| ![Devices](docs/images/en/devices.png) | ![Device details](docs/images/en/device-details.png) |
+| The connected device and its installed apps, with search and uninstall | Device details: serial, baseband, SIM and hardware in one view |
+| ![Signing](docs/images/en/signing.png) | ![Install IPA](docs/images/en/install-ipa.png) |
+| Apple developer certificates and self-signed certificates | Choose the certificate and target device before installing |
+| ![IPA editor](docs/images/en/editor.png) | ![Plist editor](docs/images/en/plist-editor.png) |
+| Rename, re-icon and toggle capabilities, then export or re-sign | Edit Info.plist in a tree view, XML or binary |
 
 ---
 
@@ -172,7 +172,8 @@ sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libwebkit2gtk-
 | `src/` | React UI: pages, components, stores and `zh` / `en` locales |
 | `src-tauri/` | Tauri shell: window and startup handling, file system and desktop commands, bundling |
 | `go-service/` | Go service: App Store access, device communication, IPA parsing, signing, log streaming |
-| `docs/images/` | Screenshots used by this README |
+| `docs/images/en` | Screenshots used by this README |
+| `docs/images/zh` | Screenshots used by the Chinese README |
 | `scripts/` | Dev runner, dev-restart supervisor and the release pre-build step |
 | `ref/` | Reference sources read while implementing protocols — not part of the build |
 
