@@ -10,6 +10,7 @@
 [![license](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2ea44f)](#download)
 [![stars](https://img.shields.io/github/stars/ipaget/ipaget)](https://github.com/ipaget/ipaget)
+
 [Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [Build from source](#build-from-source)
 
 iPAGet is a desktop app for downloading, saving and managing iPhone and iPad apps on Windows,
