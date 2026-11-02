@@ -1,126 +1,129 @@
 # iPAGet
 
-**Get App Store apps onto your computer without a Mac — and put them back on your phone.**
+**An App Store downloader and IPA manager**
 
 [![build](https://github.com/ipaget/ipaget/actions/workflows/build.yml/badge.svg)](https://github.com/ipaget/ipaget/actions/workflows/build.yml)
 [![release](https://img.shields.io/github/v/tag/ipaget/ipaget?sort=semver&label=release)](https://github.com/ipaget/ipaget/releases)
-[![commits](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/ipaget/ipaget/pulls)
-<!-- Once the release is published, the download counter works and can replace the commits badge:
-[![downloads](https://img.shields.io/github/downloads/ipaget/ipaget/total)](https://github.com/ipaget/ipaget/releases) -->
+[![downloads](https://img.shields.io/github/downloads/ipaget/ipaget/total)](https://github.com/ipaget/ipaget/releases)
 [![license](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2ea44f)](#download)
 [![stars](https://img.shields.io/github/stars/ipaget/ipaget)](https://github.com/ipaget/ipaget)
-[![issues](https://img.shields.io/github/issues/ipaget/ipaget)](https://github.com/ipaget/ipaget/issues)
-[![last commit](https://img.shields.io/github/last-commit/ipaget/ipaget)](https://github.com/ipaget/ipaget/commits/master)
+[中文](README.zh-CN.md) · [Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [Build from source](#build-from-source)
 
-[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://v2.tauri.app/)
-[![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+iPAGet is a desktop app for downloading, saving and managing iPhone and iPad apps on Windows,
+macOS and Linux.
 
-[中文说明 / Chinese README](README.zh-CN.md)
+Download App Store apps as IPA files, choose an older release from the version history, or connect
+a device to download the same build it has installed. Keep the packages locally for later
+reinstallation.
 
-**Download App Store apps on your PC without a Mac, and install them back on your phone.**
-
-The App Store hands you the latest build, on the phone, and that is it. Keeping an older version,
-looking inside an IPA, swapping the icon, signing it with your own certificate: each one needs a
-separate tool, and most of them only run on macOS.
-
-iPAGet folds those jobs into one desktop app. Search any storefront, download an IPA including the
-historical build you ask for, install or uninstall it on a connected iPhone, edit the package,
-re-sign it. There are builds for Windows, macOS and Linux, and no jailbreak is needed.
-
-Your Apple ID, two-factor codes and signing keys stay on this machine; requests go straight from
-your computer to Apple, with no third-party server in between.
-
----
-
-## Screenshots
-
-| | |
-| :-: | :-: |
-| ![App Store search](docs/images/en/app-store-search.png) | ![App library](docs/images/en/app-library.png) |
-| Search another storefront; charts, ratings and sizes in one list | Downloaded IPAs live here — install them in bulk, or delete them |
-| ![App detail](docs/images/en/app-detail.png) | ![Version history](docs/images/en/version-history.png) |
-| App details and release notes, with the download right there | Every build of an app: install whichever one you need |
-| ![Devices](docs/images/en/devices.png) | ![Device details](docs/images/en/device-details.png) |
-| The phone's installed apps, with search, uninstall and install | Model, baseband, SIM and hardware on one screen (identifiers redacted) |
-| ![Signing](docs/images/en/signing.png) | ![Install IPA](docs/images/en/install-ipa.png) |
-| Certificates issued by your developer account, plus self-signed ones | Pick the certificate and the target device first |
-| ![IPA editor](docs/images/en/editor.png) | ![Plist editor](docs/images/en/plist-editor.png) |
-| Rename, re-icon, toggle capabilities, then export or re-sign | Edit Info.plist as a tree, or just write the XML |
+The app also includes device app management, an IPA editor, certificate management and re-signing.
 
 ---
 
 ## Download
 
-Pick the file for your system from the [latest release](https://github.com/ipaget/ipaget/releases) —
-the platform is in the file name, for example `iPAGet_1.0.0_windows-x64.msi`. One file per system is
-all you need.
+Download a build for your system from [Releases](https://github.com/ipaget/ipaget/releases/latest).
+The formats listed for each system are alternative ways to install or run the app; choose one.
 
 | System | Recommended | Alternatives |
 | --- | --- | --- |
 | Windows 10/11, 64-bit | `iPAGet_<version>_windows-x64.msi` | `iPAGet_<version>_windows-x64-setup.exe` (NSIS installer), `iPAGet_<version>_windows-x64-portable.exe` |
 | Windows 10/11, 32-bit | `iPAGet_<version>_windows-x86.msi` | `iPAGet_<version>_windows-x86-setup.exe`, `iPAGet_<version>_windows-x86-portable.exe` |
-| macOS, any Mac | `iPAGet_<version>_macos-universal.dmg` | `iPAGet_<version>_macos-universal.app.zip` (only when the DMG is missing) |
-| Linux, 64-bit | `iPAGet_<version>_linux-amd64.AppImage` | `iPAGet_<version>_linux-amd64-portable` |
+| macOS, Apple Silicon / Intel | `iPAGet_<version>_macos-universal.dmg` | `iPAGet_<version>_macos-universal.app.zip` (only when the DMG is missing) |
+| Linux, x86_64 | `iPAGet_<version>_linux-amd64.AppImage` | `iPAGet_<version>_linux-amd64-portable` |
 
-You will run into these warnings:
+On Windows, `.msi` and `-setup.exe` are installers; `-portable.exe` runs without installation.
+The macOS Universal build supports both Apple Silicon and Intel.
+
+Installation notes:
 
 - **macOS** builds are not signed or notarized. On first launch use **right-click → Open**, or run
   `xattr -dr com.apple.quarantine /Applications/iPAGet.app`.
-- **Windows** may show a SmartScreen warning for the same reason: choose **More info → Run anyway**.
+- **Windows** builds are unsigned and may trigger SmartScreen. After checking that the file came
+  from this repository's Release, choose **More info → Run anyway**.
 - **Linux** AppImage: `chmod +x iPAGet_<version>_linux-amd64.AppImage` and run it. It is built on
   Ubuntu 24.04, so it needs glibc 2.39 or newer (Ubuntu 24.04+, Debian 13+, Fedora 40+).
 
 ---
 
-## What it does
+## Features
 
-### Store and downloads
+### Downloads and versions
 
-- Search by storefront (US, CN, JP, GB and more) with top charts, subtitles, ratings and genres, or
-  jump straight from an app's page to its download.
-- See the full **version history** before downloading and pick any build you want, including the one
-  installed on your phone right now: matched by App Store build ID, not guessed from a version
-  string.
-- Stay signed in to several Apple Accounts at once; sessions are cached, so you are not typing a
-  verification code on every launch.
-- Downloads show progress, transferred size and speed, and land in the app library.
+- Search by App Store region and view charts, app details and release notes.
+- Download the latest release or select a specific version from the version history.
+- Read an installed app's App Store build identifier and download that same build. This downloads
+  a copy from Apple; it does not extract the installed package from the device.
+- Use multiple Apple Accounts, track download progress and speed, and manage downloaded or imported
+  IPAs in the local library.
 
-### Devices
+### Device app management
 
-- Plug in a device and see model, iOS version, storage, battery and how it is connected.
-- List the installed apps with their sizes, read the App Store ID each one carries, and download
-  that same build.
-- Install an IPA, uninstall an app, browse an app's container and move files in or out.
+- View device information, installed apps and their storage use.
+- Install IPAs, uninstall apps and transfer files through the app containers that iOS makes accessible.
 
-### Packages
+### IPA inspection and editing
 
-- Inspect an IPA before installing: bundle ID, version and build, minimum iOS, supported devices,
-  embedded profile, entitlements, dylibs and frameworks, and whether the binary is encrypted.
-- Edit `Info.plist` and other property lists in a tree view, or as raw XML.
+- Inspect bundle identifiers, versions and build numbers, minimum OS requirements, provisioning
+  profiles, entitlements, frameworks and encryption status.
+- Change an app's display name, icon and `Info.plist`, then export the modified IPA.
+- Edit property lists as a tree or as XML, with support for XML and binary Plist formats.
 
-### Signing
+### Certificates and signing
 
-- Issue a certificate from your Apple developer account — a free account works — or import one you
-  already have.
-- Sign or re-sign an IPA with a certificate and profile, ready to install.
-- Keys live in the OS keychain; the app uploads nothing to a server of its own.
+- Import an existing certificate or request a signing certificate through an Apple developer account.
+- Sign or re-sign an IPA with a certificate and provisioning profile.
 
 ---
 
-## Before you start
+## Screenshots
 
-- Anything that talks to the App Store needs an Apple Account. Local-only work (seeing installed
-  apps, browsing files, installing an IPA you already have) does not.
-- You can only download apps your account holds a licence for. Even free apps have to have been
-  "acquired" once in the store, otherwise the download fails on licensing.
-- You need an iOS device on USB that has been trusted on the phone.
-- Some operations on iOS 17 and newer go through an usbmux tunnel and need administrator rights: put
-  `wintun.dll` next to the app on Windows, start it with `sudo` on macOS and Linux.
-- If you are behind a proxy, set it in **Settings**. It takes effect immediately, no restart.
+| App Store search | Local library |
+| :-: | :-: |
+| ![App Store search](docs/images/en/app-store-search.png) | ![App library](docs/images/en/app-library.png) |
+| Search by region and browse charts | Manage local IPAs and install or delete them in bulk |
+| **App details** | **Version history** |
+| ![App detail](docs/images/en/app-detail.png) | ![Version history](docs/images/en/version-history.png) |
+| View app information and release notes | Choose an older version to download |
+| **Installed apps** | **Device information** |
+| ![Devices](docs/images/en/devices.png) | ![Device details](docs/images/en/device-details.png) |
+| View, install and uninstall apps | View OS and hardware details; identifiers are redacted |
+| **Certificates** | **IPA installation** |
+| ![Signing](docs/images/en/signing.png) | ![Install IPA](docs/images/en/install-ipa.png) |
+| Manage developer and self-signed certificates | Select a device and signing options |
+| **IPA editor** | **Plist editor** |
+| ![IPA editor](docs/images/en/editor.png) | ![Plist editor](docs/images/en/plist-editor.png) |
+| Change the app name, icon and configuration | Inspect and edit property lists |
+
+---
+
+## Getting started
+
+1. **Download an app:** Sign in with an Apple Account and complete two-factor authentication.
+   Search for an app, then download the latest release or choose a version from its history.
+2. **Manage IPAs:** Open the library to view downloaded packages, or import an existing IPA to
+   inspect or edit it.
+3. **Connect a device:** Attach an iPhone or iPad over USB, unlock it and accept **Trust This Computer**.
+   Open the device page to manage apps or install an IPA.
+
+Downloading an IPA does not require a connected device. Inspecting local IPAs and using basic
+device features does not require an Apple Account. Configure a proxy in **Settings** if needed.
+
+### Limitations
+
+- **Older builds are not guaranteed to remain available.** Version lists and downloads depend on
+  what Apple still serves and what your account is authorized to download. Matching an installed
+  version also requires usable version metadata from the app.
+- **An IPA is not a universally installable package.** App Store downloads remain subject to
+  account authorization and DRM; re-signing does not remove DRM. Installation and execution also
+  depend on OS compatibility, certificates and provisioning profiles.
+- **No jailbreak is required, but iOS access restrictions still apply.** File browsing is limited
+  to the containers exposed by iOS and the app, not every app's complete data.
+- **Some iOS 17+ operations require a tunnel and administrator rights.** Windows needs `wintun.dll`
+  in the application directory; tunnel operations on macOS and Linux require `sudo` privileges.
+- **App Store downloads are requested directly from Apple.** Developer account authentication may
+  use the Anisette service selected in Settings. Use a service you trust.
 
 ---
 

@@ -1,115 +1,119 @@
 # iPAGet
 
-**不用 Mac，也能把 App Store 的应用下到电脑、再装回手机。**
+**App Store 下载与 IPA 管理工具**
 
 [![build](https://github.com/ipaget/ipaget/actions/workflows/build.yml/badge.svg)](https://github.com/ipaget/ipaget/actions/workflows/build.yml)
 [![release](https://img.shields.io/github/v/tag/ipaget/ipaget?sort=semver&label=release)](https://github.com/ipaget/ipaget/releases)
-[![commits](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/ipaget/ipaget/pulls)
-<!-- 发布 Release 后下载计数徽章才有效，可替换上面的 commits 徽章：
-[![downloads](https://img.shields.io/github/downloads/ipaget/ipaget/total)](https://github.com/ipaget/ipaget/releases) -->
+[![downloads](https://img.shields.io/github/downloads/ipaget/ipaget/total)](https://github.com/ipaget/ipaget/releases)
 [![license](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2ea44f)](#下载)
 [![stars](https://img.shields.io/github/stars/ipaget/ipaget)](https://github.com/ipaget/ipaget)
-[![issues](https://img.shields.io/github/issues/ipaget/ipaget)](https://github.com/ipaget/ipaget/issues)
-[![last commit](https://img.shields.io/github/last-commit/ipaget/ipaget)](https://github.com/ipaget/ipaget/commits/master)
+[English](README.md) · [下载](#下载) · [功能](#功能) · [界面截图](#界面截图) · [从源码构建](#从源码构建)
 
-[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://v2.tauri.app/)
-[![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+iPAGet 用于在电脑上下载、保存和管理 iPhone、iPad 应用，支持 Windows、macOS 和 Linux。
 
-[English README](README.md)
+你可以将 App Store 应用下载为 IPA 文件，从版本历史中选择旧版，也可以连接设备，
+下载与设备当前安装版本一致的 IPA。安装包保存在本地，方便留存和重装。
 
-App Store 只给你最新版，也只让你装在手机上。想留一份旧版本、想看看包里到底是什么、
-想换掉应用图标、想用自己的证书再签一次，都得另找工具，而且大多数只跑在 macOS 上。
-
-iPAGet 把它们收进一个桌面应用：按地区搜商店、下 IPA（包括你指定的历史版本）、连上手机
-装回去或卸载、改包、重新签名。Windows、macOS、Linux 都有安装包，不需要越狱。
-
-账号、两步验证、证书私钥都留在本机，请求由电脑直接发往 Apple，中间没有第三方服务器。
-
----
-
-## 界面截图
-
-| | |
-| :-: | :-: |
-| ![App Store 搜索](docs/images/zh/app-store-search.png) | ![应用库](docs/images/zh/app-library.png) |
-| 换个商店地区就能搜，榜单、评分、体积都在列表里 | 下好的 IPA 放在这儿，能批量装，也能删 |
-| ![应用详情](docs/images/zh/app-detail.png) | ![版本历史](docs/images/zh/version-history.png) |
-| 应用详情和更新说明，直接下当前版或翻历史 | 一个应用的全部构建版本，想装哪版选哪版 |
-| ![设备](docs/images/zh/devices.png) | ![设备详情](docs/images/zh/device-details.png) |
-| 手机连上就能看到已装应用，搜索、卸载、装 IPA 都在这 | 机型、基带、SIM、硬件一屏看完（图里设备标识已隐去） |
-| ![签名](docs/images/zh/signing.png) | ![安装 IPA](docs/images/zh/install-ipa.png) |
-| 开发者账号签发的证书，和自己签的证书都在这里 | 装之前先选证书和目标设备 |
-| ![编辑器](docs/images/zh/editor.png) | ![Plist 编辑器](docs/images/zh/plist-editor.png) |
-| 改名字、换图标、开关能力，然后导出或直接重签 | Info.plist 可以按树改，也可以直接写 XML |
+除了下载，iPAGet 还提供设备应用管理、IPA 编辑、证书管理和重新签名功能。
 
 ---
 
 ## 下载
 
-去 [最新发布](https://github.com/ipaget/ipaget/releases) 挑对应系统的文件就行。文件名开头就是平台，
-例如 `iPAGet_1.0.0_windows-x64.msi`，每个系统下一个就够。
+在 [Releases](https://github.com/ipaget/ipaget/releases/latest) 下载对应系统的文件。同一系统的
+几种格式是不同的安装方式，选择一种即可：
 
 | 系统 | 推荐 | 其他选择 |
 | --- | --- | --- |
 | Windows 10/11 64 位 | `iPAGet_<版本>_windows-x64.msi` | `iPAGet_<版本>_windows-x64-setup.exe`（NSIS 安装包）、`iPAGet_<版本>_windows-x64-portable.exe` |
 | Windows 10/11 32 位 | `iPAGet_<版本>_windows-x86.msi` | `iPAGet_<版本>_windows-x86-setup.exe`、`iPAGet_<版本>_windows-x86-portable.exe` |
-| macOS（任意机型） | `iPAGet_<版本>_macos-universal.dmg` | `iPAGet_<版本>_macos-universal.app.zip`（仅在 DMG 缺失时使用） |
-| Linux 64 位 | `iPAGet_<版本>_linux-amd64.AppImage` | `iPAGet_<版本>_linux-amd64-portable` |
+| macOS（Apple Silicon / Intel） | `iPAGet_<版本>_macos-universal.dmg` | `iPAGet_<版本>_macos-universal.app.zip`（仅在 DMG 缺失时使用） |
+| Linux x86_64 | `iPAGet_<版本>_linux-amd64.AppImage` | `iPAGet_<版本>_linux-amd64-portable` |
 
-装的时候会遇到这些提示：
+Windows 的 `.msi` 和 `-setup.exe` 都是安装包，`-portable.exe` 是免安装版；macOS 的
+Universal 包同时支持 Apple Silicon 和 Intel。
+
+安装注意事项：
 
 - **macOS** 版本未做签名与公证。首次打开请 **右键 → 打开**，或执行
   `xattr -dr com.apple.quarantine /Applications/iPAGet.app`。
-- **Windows** 同样会提示 SmartScreen，选择 **更多信息 → 仍要运行** 即可。
+- **Windows** 版本未签名，可能出现 SmartScreen 提示。确认文件来自本仓库的 Release 后，
+  选择 **更多信息 → 仍要运行**。
 - **Linux** 的 AppImage 需要先 `chmod +x iPAGet_<版本>_linux-amd64.AppImage` 再运行。它在
   Ubuntu 24.04 上构建，需要 glibc 2.39 或更高版本（Ubuntu 24.04+、Debian 13+、Fedora 40+）。
 
 ---
 
-## 能做什么
+## 功能
 
-### 浏览与下载
+### 下载与版本管理
 
-- 按商店地区搜应用（美国、中国、日本、英国……），看榜单、副标题、评分和分类，也可以从详情
-  页直接跳到下载。
-- 下载前能看到完整的**版本历史**，挑任意一个构建版本下回来，包括手机现在装着的那一版：按
-  App Store 的构建标识匹配，不靠版本号猜。
-- 同时登几个 Apple 账号，登录状态会缓存，不用每次启动都重新输一次验证码。
-- 下载时显示进度、已传大小和速度，下好的 IPA 进应用库统一管。
+- 按商店地区搜索应用，查看榜单、应用详情和更新说明。
+- 下载最新版，或从版本历史中选择指定版本。
+- 读取设备上已装应用的 App Store 构建标识，下载同一构建的 IPA；这是从 Apple 重新下载，
+  不是从设备导出安装包。
+- 支持多个 Apple 账号，显示下载进度与速度，在本地应用库中管理下载或导入的 IPA。
 
-### 设备
+### 设备应用管理
 
-- 连上设备就能看到机型、系统版本、存储、电池和连接方式。
-- 列出手机上已装的应用和它们占的空间，读得到应用里记录的 App Store 标识，据此下载同一个版本。
-- 装 IPA、卸应用、翻应用的文件目录，能往里传也能往外取。
+- 查看设备信息、已安装应用及其存储占用。
+- 安装 IPA、卸载应用，浏览应用允许访问的文件容器并传输文件。
 
-### 改包
+### IPA 查看与编辑
 
-- 装之前先看清楚：包标识、版本与构建号、最低系统版本、支持的设备、内嵌描述文件、授权项、
-  动态库与框架，以及可执行文件有没有加密。
-- `Info.plist` 这类属性列表，可以用树视图改，也可以直接写 XML。
+- 查看包标识、版本与构建号、最低系统要求、描述文件、授权项、框架和加密状态。
+- 修改应用显示名称、图标及 `Info.plist`，导出修改后的 IPA。
+- 使用树形视图或 XML 编辑属性列表，支持 XML 与二进制 Plist。
 
-### 签名
+### 证书与签名
 
-- 用 Apple 开发者账号（免费账号也行）签发一张新证书，或者导入手上已有的证书。
-- 拿证书和描述文件给 IPA 签名、重签，签完直接装。
-- 私钥留在系统钥匙串里，应用不往任何服务器上传数据。
+- 导入已有证书，或通过 Apple 开发者账号申请签名证书。
+- 使用证书和描述文件为 IPA 签名或重新签名。
 
 ---
 
-## 用之前要知道的
+## 界面截图
 
-- 跟 App Store 有关的功能都要登录 Apple 账号；只动本机的事（看已装应用、翻文件、装现成的
-  IPA）不用登录。
-- 只能下你账号拥有过的应用；免费应用也要先在商店里点过一次「获取」，否则会提示缺少授权。
-- 需要一台用 USB 连着、并且在手机上点过「信任」的 iOS 设备。
-- iOS 17 以上的部分操作要走 usbmux 隧道，得给管理员权限：Windows 把 `wintun.dll` 放进应用
-  目录，macOS 和 Linux 用 `sudo` 启动。
-- 走代理的话在 **设置** 里填，填完立刻生效，不用重启。
+| App Store 搜索 | 本地应用库 |
+| :-: | :-: |
+| ![App Store 搜索](docs/images/zh/app-store-search.png) | ![应用库](docs/images/zh/app-library.png) |
+| 按地区搜索应用与浏览榜单 | 管理本地 IPA，批量安装或删除 |
+| **应用详情** | **版本历史** |
+| ![应用详情](docs/images/zh/app-detail.png) | ![版本历史](docs/images/zh/version-history.png) |
+| 查看应用信息和更新说明 | 选择历史版本下载 |
+| **设备应用** | **设备信息** |
+| ![设备](docs/images/zh/devices.png) | ![设备详情](docs/images/zh/device-details.png) |
+| 查看、安装和卸载应用 | 查看系统与硬件信息，设备标识已打码 |
+| **证书管理** | **IPA 安装** |
+| ![签名](docs/images/zh/signing.png) | ![安装 IPA](docs/images/zh/install-ipa.png) |
+| 管理开发者证书与自签证书 | 选择目标设备与签名选项 |
+| **IPA 编辑器** | **Plist 编辑器** |
+| ![编辑器](docs/images/zh/editor.png) | ![Plist 编辑器](docs/images/zh/plist-editor.png) |
+| 修改应用名称、图标和配置 | 查看和编辑属性列表 |
+
+---
+
+## 开始使用
+
+1. **下载应用**：登录 Apple 账号并完成两步验证，搜索应用，在详情页下载最新版或选择历史版本。
+2. **管理 IPA**：在应用库中查看下载的安装包，也可以导入已有 IPA，查看内容或进行编辑。
+3. **连接设备**：通过 USB 连接 iPhone 或 iPad，解锁并选择 **信任此电脑**，然后在设备页管理应用或安装 IPA。
+
+下载 IPA 不需要连接设备；查看本地 IPA 和常规设备操作不需要登录 Apple 账号。
+如果需要代理，可在 **设置** 中配置。
+
+### 使用限制
+
+- **旧版本不保证始终可用。** 版本列表和下载结果取决于 Apple 仍提供哪些构建，以及当前账号的授权。
+  下载设备已装版本时，还需要应用提供可用的版本标识。
+- **IPA 不等于通用安装包。** App Store 下载受账号授权与 DRM 限制，重新签名不会解除 DRM。
+  安装和运行还需满足设备系统、证书与描述文件的要求。
+- **不需要越狱，但仍受 iOS 权限限制。** 文件浏览范围由系统和应用决定，不能访问任意应用的全部数据。
+- **部分 iOS 17+ 操作需要隧道及管理员权限。** Windows 需在应用目录提供 `wintun.dll`；
+  macOS 和 Linux 的隧道操作需要 `sudo` 权限。
+- **App Store 下载直接向 Apple 请求。** 开发者账号认证可能使用设置中指定的 Anisette 服务，
+  请确认服务来源可信。
 
 ---
 
