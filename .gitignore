@@ -63,6 +63,9 @@ temp/
 *.tmp
 *.temp
 
+# Local promotional drafts (not part of the repository)
+docs/promo/
+
 # Lock files (keep them for reproducible builds)
 # package-lock.json (if using npm)
 # pnpm-lock.yaml (keep for pnpm)
