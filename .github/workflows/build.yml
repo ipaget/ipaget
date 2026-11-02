@@ -381,13 +381,30 @@ jobs:
             lipo -create "$ARM_APP/$GO_REL" "$X64_APP/$GO_REL" -output work/universal.app/$GO_REL
             chmod +x work/universal.app/$GO_REL
           fi
-          # Free the per-architecture copies before hdiutil needs working space.
+          # Free the per-architecture copies before the image is built.
           rm -rf work/arm64 work/x64
           df -h /
-          if ! hdiutil create -volname iPAGet -srcfolder work/universal.app -ov -format UDZO "release-dist/iPAGet_${VERSION}_macos-universal.dmg"; then
+          hdiutil info | tail -n 5
+
+          # `hdiutil create -srcfolder` returns "Resource busy" on this runner image,
+          # so the app is copied into a writable sparse image that is then converted.
+          rm -f work/iPAGet.sparseimage
+          mkdir -p work/mnt
+          DMG="release-dist/iPAGet_${VERSION}_macos-universal.dmg"
+          created=0
+          if hdiutil create -volname iPAGet -size 2g -fs HFS+ -type SPARSE -ov work/iPAGet.sparseimage &&
+             hdiutil attach work/iPAGet.sparseimage -nobrowse -noautoopen -mountpoint "$PWD/work/mnt"; then
+            ditto work/universal.app work/mnt/iPAGet.app
+            hdiutil detach "$PWD/work/mnt" -force || echo 'detach failed'
+            hdiutil convert work/iPAGet.sparseimage -format UDZO -o "$DMG" && created=1
+          fi
+          if [ "$created" != 1 ]; then
             echo 'disk image creation failed, publishing a zip of the universal app instead'
+            hdiutil info | tail -n 20
+            rm -f "$DMG"
             ditto -c -k --sequesterRsrc --keepParent work/universal.app "release-dist/iPAGet_${VERSION}_macos-universal.app.zip"
           fi
+          hdiutil detach "$PWD/work/mnt" -force >/dev/null 2>&1 || true
           rm -rf work
           df -h /
 
