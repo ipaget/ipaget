@@ -52,21 +52,22 @@ in between.
 ## Download
 
 Grab the file for your system from the [latest release](https://github.com/ipaget/ipaget/releases).
-Windows and Linux file names contain the version, for example `iPAGet_1.0.0_x64_en-US.msi`.
+Every file name starts with the platform it targets, for example
+`iPAGet_1.0.0_windows-x64.msi`. Pick one file per system.
 
 | System | Recommended | Alternatives |
 | --- | --- | --- |
-| Windows 10/11, 64-bit | `iPAGet_<version>_x64_en-US.msi` | `..._x64-setup.exe` (NSIS), `iPAGet_windows-x64_portable.exe` |
-| Windows 10/11, 32-bit | `iPAGet_<version>_x86_en-US.msi` | `..._x86-setup.exe`, `iPAGet_windows-x86_portable.exe` |
-| macOS, any Mac | `universal-macOS-Universal.dmg` | `iPAGet_<version>_aarch64.dmg` (Apple silicon), `iPAGet_<version>_x64.dmg` (Intel), `macos-arm64.app.zip`, `macos-x64.app.zip` |
-| Linux, 64-bit | `iPAGet_<version>_amd64.AppImage` | `iPAGet_linux-amd64-portable` |
+| Windows 10/11, 64-bit | `iPAGet_<version>_windows-x64.msi` | `iPAGet_<version>_windows-x64-setup.exe` (NSIS installer), `iPAGet_<version>_windows-x64-portable.exe` |
+| Windows 10/11, 32-bit | `iPAGet_<version>_windows-x86.msi` | `iPAGet_<version>_windows-x86-setup.exe`, `iPAGet_<version>_windows-x86-portable.exe` |
+| macOS, any Mac | `iPAGet_<version>_macos-universal.dmg` | `iPAGet_<version>_macos-universal.app.zip` (only when the DMG is missing) |
+| Linux, 64-bit | `iPAGet_<version>_linux-amd64.AppImage` | `iPAGet_<version>_linux-amd64-portable` |
 
 Install notes:
 
 - **macOS** builds are not signed or notarized. On first launch use **right-click → Open**, or run
   `xattr -dr com.apple.quarantine /Applications/iPAGet.app`.
 - **Windows** may show a SmartScreen warning for the same reason: choose **More info → Run anyway**.
-- **Linux** AppImage: `chmod +x iPAGet_<version>_amd64.AppImage` and run it. It is built on
+- **Linux** AppImage: `chmod +x iPAGet_<version>_linux-amd64.AppImage` and run it. It is built on
   Ubuntu 24.04, so it needs glibc 2.39 or newer (Ubuntu 24.04+, Debian 13+, Fedora 40+).
 
 ---

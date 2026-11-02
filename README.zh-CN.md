@@ -49,22 +49,22 @@ Windows、macOS、Linux 都能用：不必为了 iOS 折腾一台 Mac，也不�
 
 ## 下载
 
-在 [最新发布](https://github.com/ipaget/ipaget/releases) 中选择对应系统的文件。Windows 与
-Linux 的文件名包含版本号，例如 `iPAGet_1.0.0_x64_en-US.msi`。
+在 [最新发布](https://github.com/ipaget/ipaget/releases) 中选择对应系统的文件。每个文件名都以目标
+平台开头，例如 `iPAGet_1.0.0_windows-x64.msi`，每个系统只需下载一个文件。
 
 | 系统 | 推荐 | 其他选择 |
 | --- | --- | --- |
-| Windows 10/11 64 位 | `iPAGet_<版本>_x64_en-US.msi` | `..._x64-setup.exe`（NSIS 安装包）、`iPAGet_windows-x64_portable.exe` |
-| Windows 10/11 32 位 | `iPAGet_<版本>_x86_en-US.msi` | `..._x86-setup.exe`、`iPAGet_windows-x86_portable.exe` |
-| macOS（任意机型） | `universal-macOS-Universal.dmg` | `iPAGet_<版本>_aarch64.dmg`（Apple 芯片）、`iPAGet_<版本>_x64.dmg`（Intel）、`macos-arm64.app.zip`、`macos-x64.app.zip` |
-| Linux 64 位 | `iPAGet_<版本>_amd64.AppImage` | `iPAGet_linux-amd64-portable` |
+| Windows 10/11 64 位 | `iPAGet_<版本>_windows-x64.msi` | `iPAGet_<版本>_windows-x64-setup.exe`（NSIS 安装包）、`iPAGet_<版本>_windows-x64-portable.exe` |
+| Windows 10/11 32 位 | `iPAGet_<版本>_windows-x86.msi` | `iPAGet_<版本>_windows-x86-setup.exe`、`iPAGet_<版本>_windows-x86-portable.exe` |
+| macOS（任意机型） | `iPAGet_<版本>_macos-universal.dmg` | `iPAGet_<版本>_macos-universal.app.zip`（仅在 DMG 缺失时使用） |
+| Linux 64 位 | `iPAGet_<版本>_linux-amd64.AppImage` | `iPAGet_<版本>_linux-amd64-portable` |
 
 安装提示：
 
 - **macOS** 版本未做签名与公证。首次打开请 **右键 → 打开**，或执行
   `xattr -dr com.apple.quarantine /Applications/iPAGet.app`。
 - **Windows** 同样会提示 SmartScreen，选择 **更多信息 → 仍要运行** 即可。
-- **Linux** 的 AppImage 需要先 `chmod +x iPAGet_<版本>_amd64.AppImage` 再运行。它在
+- **Linux** 的 AppImage 需要先 `chmod +x iPAGet_<版本>_linux-amd64.AppImage` 再运行。它在
   Ubuntu 24.04 上构建，需要 glibc 2.39 或更高版本（Ubuntu 24.04+、Debian 13+、Fedora 40+）。
 
 ---
