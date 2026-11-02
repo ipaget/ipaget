@@ -2,13 +2,15 @@
 
 **An App Store downloader and IPA manager**
 
+**[中文 README / Chinese README](README.zh-CN.md)**
+
 [![build](https://github.com/ipaget/ipaget/actions/workflows/build.yml/badge.svg)](https://github.com/ipaget/ipaget/actions/workflows/build.yml)
 [![release](https://img.shields.io/github/v/tag/ipaget/ipaget?sort=semver&label=release)](https://github.com/ipaget/ipaget/releases)
 [![downloads](https://img.shields.io/github/downloads/ipaget/ipaget/total)](https://github.com/ipaget/ipaget/releases)
 [![license](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2ea44f)](#download)
 [![stars](https://img.shields.io/github/stars/ipaget/ipaget)](https://github.com/ipaget/ipaget)
-[中文](README.zh-CN.md) · [Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [Build from source](#build-from-source)
+[Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [Build from source](#build-from-source)
 
 iPAGet is a desktop app for downloading, saving and managing iPhone and iPad apps on Windows,
 macOS and Linux.
@@ -120,8 +122,6 @@ device features does not require an Apple Account. Configure a proxy in **Settin
   depend on OS compatibility, certificates and provisioning profiles.
 - **No jailbreak is required, but iOS access restrictions still apply.** File browsing is limited
   to the containers exposed by iOS and the app, not every app's complete data.
-- **Some iOS 17+ operations require a tunnel and administrator rights.** Windows needs `wintun.dll`
-  in the application directory; tunnel operations on macOS and Linux require `sudo` privileges.
 - **App Store downloads are requested directly from Apple.** Developer account authentication may
   use the Anisette service selected in Settings. Use a service you trust.
 
@@ -179,26 +179,9 @@ sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libwebkit2gtk-
 | `src/` | React UI: pages, components, stores and `zh` / `en` locales |
 | `src-tauri/` | Tauri shell: window and startup handling, file system and desktop commands, bundling |
 | `go-service/` | Go service: App Store access, device communication, IPA parsing, signing, log streaming |
-| `docs/images/en` | Screenshots used by this README |
-| `docs/images/zh` | Screenshots used by the Chinese README |
-| `scripts/` | Dev runner, dev-restart supervisor and the release pre-build step |
-| `ref/` | Reference sources read while implementing protocols — not part of the build |
 
 The UI and the service talk over a local HTTP API plus a WebSocket for logs; the service is bundled
 inside the app, so there is nothing else to install.
-
----
-
-## Troubleshooting
-
-| Symptom | What to do |
-| --- | --- |
-| A verification code is requested again after signing in | The session was cleared or expired. Check **Debug → Sign-in session** to see what is stored, or clear it and sign in again. |
-| Device is not listed | Reconnect the cable, accept **Trust This Computer**, unlock the device, and make sure the Apple USB drivers are installed on Windows. |
-| Installing or browsing fails on iOS 17+ | Start the tunnel with administrator rights (`wintun.dll` on Windows, `sudo` on macOS/Linux). |
-| Version history takes about a minute the first time | The App Store needs a signed download-authorization handshake before it lists builds; results are cached for an hour, and the dialog has a refresh button. |
-| Downloads fail with connection errors | An unreachable proxy in **Settings** blocks App Store requests. Clear it or point it at a working proxy. |
-| macOS refuses to open the app | Right-click → **Open**, or remove the quarantine attribute as shown above. |
 
 ---
 
@@ -217,7 +200,6 @@ iPAGet builds on the work of others:
 - [ipatool](https://github.com/majd/ipatool) — App Store authentication and download protocol
 - [go-ios](https://github.com/danielpaulus/go-ios) — device communication over usbmux and lockdown
 - [Tauri](https://v2.tauri.app/), [React](https://react.dev/) and [Vite](https://vite.dev/) — the desktop shell and interface
-- The projects collected under `ref/`, which were read while implementing the protocols above
 
 Apple, App Store, iPhone and iPad are trademarks of Apple Inc. This project is not affiliated with
 Apple.

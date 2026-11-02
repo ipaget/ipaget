@@ -2,13 +2,15 @@
 
 **App Store 下载与 IPA 管理工具**
 
+**[English README](README.md)**
+
 [![build](https://github.com/ipaget/ipaget/actions/workflows/build.yml/badge.svg)](https://github.com/ipaget/ipaget/actions/workflows/build.yml)
 [![release](https://img.shields.io/github/v/tag/ipaget/ipaget?sort=semver&label=release)](https://github.com/ipaget/ipaget/releases)
 [![downloads](https://img.shields.io/github/downloads/ipaget/ipaget/total)](https://github.com/ipaget/ipaget/releases)
 [![license](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2ea44f)](#下载)
 [![stars](https://img.shields.io/github/stars/ipaget/ipaget)](https://github.com/ipaget/ipaget)
-[English](README.md) · [下载](#下载) · [功能](#功能) · [界面截图](#界面截图) · [从源码构建](#从源码构建)
+[下载](#下载) · [功能](#功能) · [界面截图](#界面截图) · [从源码构建](#从源码构建)
 
 iPAGet 用于在电脑上下载、保存和管理 iPhone、iPad 应用，支持 Windows、macOS 和 Linux。
 
@@ -110,8 +112,6 @@ Universal 包同时支持 Apple Silicon 和 Intel。
 - **IPA 不等于通用安装包。** App Store 下载受账号授权与 DRM 限制，重新签名不会解除 DRM。
   安装和运行还需满足设备系统、证书与描述文件的要求。
 - **不需要越狱，但仍受 iOS 权限限制。** 文件浏览范围由系统和应用决定，不能访问任意应用的全部数据。
-- **部分 iOS 17+ 操作需要隧道及管理员权限。** Windows 需在应用目录提供 `wintun.dll`；
-  macOS 和 Linux 的隧道操作需要 `sudo` 权限。
 - **App Store 下载直接向 Apple 请求。** 开发者账号认证可能使用设置中指定的 Anisette 服务，
   请确认服务来源可信。
 
@@ -167,25 +167,8 @@ sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libwebkit2gtk-
 | `src/` | React 界面：页面、组件、状态管理与 `zh` / `en` 文案 |
 | `src-tauri/` | Tauri 外壳：窗口与启动流程、文件系统与桌面命令、打包配置 |
 | `go-service/` | Go 服务：App Store 访问、设备通信、IPA 解析、签名、日志推送 |
-| `docs/images/zh` | 中文 README 使用的截图 |
-| `docs/images/en` | 英文 README 使用的截图 |
-| `scripts/` | 开发运行器、开发重启守护与发布前构建脚本 |
-| `ref/` | 实现协议时参考的源码，不参与构建 |
 
 界面与服务之间通过本机 HTTP 接口通信，日志走 WebSocket；服务随应用一起分发，无需额外安装。
-
----
-
-## 常见问题
-
-| 现象 | 处理方式 |
-| --- | --- |
-| 登录后仍反复要求验证码 | 会话被清除或已过期。打开 **调试 → 登录会话** 查看已保存内容，必要时清除后重新登录。 |
-| 找不到设备 | 重新插拔数据线、在设备上选择“信任此电脑”并解锁；Windows 上确认已安装 Apple 的 USB 驱动。 |
-| iOS 17+ 安装或浏览失败 | 以管理员权限启动隧道（Windows 需要 `wintun.dll`，macOS/Linux 需要 `sudo`）。 |
-| 首次查询版本历史要等约一分钟 | App Store 需要先完成带签名的下载授权握手才能列出构建版本；结果会缓存一小时，对话框内可手动刷新。 |
-| 下载报连接错误 | **设置** 中的代理不可达会阻断 App Store 请求，清除或换用可用代理。 |
-| macOS 无法打开应用 | 按上文右键 **打开**，或移除隔离属性。 |
 
 ---
 
@@ -203,6 +186,5 @@ iPAGet 建立在以下项目之上：
 - [ipatool](https://github.com/majd/ipatool) —— App Store 登录与下载协议
 - [go-ios](https://github.com/danielpaulus/go-ios) —— 通过 usbmux 与 lockdown 与设备通信
 - [Tauri](https://v2.tauri.app/)、[React](https://react.dev/) 与 [Vite](https://vite.dev/) —— 桌面外壳与界面
-- `ref/` 下的参考项目，实现协议时用于比对
 
 Apple、App Store、iPhone、iPad 是 Apple Inc. 的商标，本项目与 Apple 无隶属关系。
