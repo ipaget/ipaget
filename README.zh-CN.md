@@ -10,6 +10,7 @@
 [![license](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2ea44f)](#下载)
 [![stars](https://img.shields.io/github/stars/ipaget/ipaget)](https://github.com/ipaget/ipaget)
+[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-community-1f6feb)](https://linux.do)
 
 [下载](#下载) · [功能](#功能) · [界面截图](#界面截图) · [从源码构建](#从源码构建)
 
@@ -187,5 +188,7 @@ iPAGet 建立在以下项目之上：
 - [ipatool](https://github.com/majd/ipatool) —— App Store 登录与下载协议
 - [go-ios](https://github.com/danielpaulus/go-ios) —— 通过 usbmux 与 lockdown 与设备通信
 - [Tauri](https://v2.tauri.app/)、[React](https://react.dev/) 与 [Vite](https://vite.dev/) —— 桌面外壳与界面
+
+本项目积极参与并认可 [LINUX DO](https://linux.do) 社区。
 
 Apple、App Store、iPhone、iPad 是 Apple Inc. 的商标，本项目与 Apple 无隶属关系。

@@ -10,6 +10,7 @@
 [![license](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2ea44f)](#download)
 [![stars](https://img.shields.io/github/stars/ipaget/ipaget)](https://github.com/ipaget/ipaget)
+[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-community-1f6feb)](https://linux.do)
 
 [Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [Build from source](#build-from-source)
 
@@ -201,6 +202,8 @@ iPAGet builds on the work of others:
 - [ipatool](https://github.com/majd/ipatool) — App Store authentication and download protocol
 - [go-ios](https://github.com/danielpaulus/go-ios) — device communication over usbmux and lockdown
 - [Tauri](https://v2.tauri.app/), [React](https://react.dev/) and [Vite](https://vite.dev/) — the desktop shell and interface
+
+This project is discussed in, and acknowledges, the [LINUX DO](https://linux.do) community.
 
 Apple, App Store, iPhone and iPad are trademarks of Apple Inc. This project is not affiliated with
 Apple.
