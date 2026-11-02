@@ -1,9 +1,8 @@
 # Outputs
 # device-info-exports
 
-# For reference only
-# ref
-# !ref/README.md
+# Reference checkouts only; anything the build needs lives in go-service/vendors
+ref/
 
 # Dependencies
 node_modules/

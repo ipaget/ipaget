@@ -22,7 +22,7 @@ require (
 
 replace (
 	github.com/danielpaulus/go-ios => ./vendors/go-ios
-	github.com/majd/ipatool/v2 => ../ref/ipatool
+	github.com/majd/ipatool/v2 => ./vendors/ipatool
 )
 
 require (
