@@ -15,12 +15,16 @@ env:
 
 jobs:
   windows:
-    name: windows-${{ matrix.target }}
+    name: windows-${{ matrix.artifact }}
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64-pc-windows-msvc, i686-pc-windows-msvc]
+        include:
+          - target: x86_64-pc-windows-msvc
+            artifact: windows-x64
+          - target: i686-pc-windows-msvc
+            artifact: windows-x86
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -80,37 +84,30 @@ jobs:
             upx -9 "$_"
           }
 
-      - name: Name portable exe
+      - name: Collect release artifacts
         shell: pwsh
         run: |
-          $label = if ('${{ matrix.target }}' -like 'i686*') { 'windows-x86' } else { 'windows-x64' }
-          Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/*.exe" -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item $_.FullName (Join-Path $_.DirectoryName "iPAGet_${label}_portable.exe") -Force
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $release = "src-tauri/target/${{ matrix.target }}/release"
+          New-Item -ItemType Directory -Force release-dist | Out-Null
+
+          $app = Get-ChildItem "$release/*.exe" | Select-Object -First 1
+          $msi = Get-ChildItem "$release/bundle/msi/*.msi" | Select-Object -First 1
+          $setup = Get-ChildItem "$release/bundle/nsis/*.exe" | Select-Object -First 1
+          if (-not $app -or -not $msi -or -not $setup) {
+            throw "Missing bundle output under $release"
           }
-          Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/iPAGet_*_portable.exe" | Select-Object -ExpandProperty Name
 
-      - name: Upload artifacts (portable exe)
+          Copy-Item $app.FullName "release-dist/iPAGet_${version}_${{ matrix.artifact }}-portable.exe"
+          Copy-Item $msi.FullName "release-dist/iPAGet_${version}_${{ matrix.artifact }}.msi"
+          Copy-Item $setup.FullName "release-dist/iPAGet_${version}_${{ matrix.artifact }}-setup.exe"
+          Get-ChildItem release-dist | Select-Object Name, Length
+
+      - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-${{ matrix.target }}-portable
-          path: |
-            src-tauri/target/${{ matrix.target }}/release/iPAGet_*_portable.exe
-          if-no-files-found: error
-
-      - name: Upload artifacts (msi)
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-${{ matrix.target }}-msi
-          path: |
-            src-tauri/target/**/bundle/msi/*.msi
-          if-no-files-found: error
-
-      - name: Upload artifacts (nsis)
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-${{ matrix.target }}-nsis
-          path: |
-            src-tauri/target/**/bundle/nsis/*.exe
+          name: release-${{ matrix.artifact }}
+          path: release-dist/*
           if-no-files-found: error
 
   linux-amd64:
@@ -189,25 +186,21 @@ jobs:
         run: |
           pnpm tauri build --bundles appimage --ci
 
-      - name: Upload artifacts (AppImage)
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-amd64-appimage
-          path: |
-            src-tauri/target/**/bundle/appimage/*.AppImage
-          if-no-files-found: error
-
-      - name: Name portable binary
+      - name: Collect release artifacts
         run: |
-          cp src-tauri/target/release/ipaget iPAGet_linux-amd64-portable
-          ls -l iPAGet_linux-amd64-portable
+          VERSION=$(node -p "require('./package.json').version")
+          APPIMAGE=$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' -print -quit)
+          if [ -z "$APPIMAGE" ]; then echo 'no AppImage produced' >&2; exit 1; fi
+          mkdir -p release-dist
+          cp "$APPIMAGE" "release-dist/iPAGet_${VERSION}_linux-amd64.AppImage"
+          cp src-tauri/target/release/ipaget "release-dist/iPAGet_${VERSION}_linux-amd64-portable"
+          ls -l release-dist
 
-      - name: Upload artifacts (portable binary)
+      - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-amd64-portable
-          path: |
-            iPAGet_linux-amd64-portable
+          name: release-linux-amd64
+          path: release-dist/*
           if-no-files-found: error
 
   macos-arm64:
@@ -254,31 +247,23 @@ jobs:
           cd go-service
           bash build.sh
 
-      - name: Build Tauri (dmg+app)
+      - name: Build Tauri (app)
         run: |
-          pnpm tauri build --bundles app,dmg --target aarch64-apple-darwin --ci
+          pnpm tauri build --bundles app --target aarch64-apple-darwin --ci
 
       - name: Zip .app for upload
         run: |
+          VERSION=$(node -p "require('./package.json').version")
           APP_DIR=$(find src-tauri/target -type d -path '*/bundle/macos/*.app' | head -n 1)
           if [ -z "$APP_DIR" ]; then echo 'no .app bundle produced' >&2; exit 1; fi
-          ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" macos-arm64.app.zip
+          mkdir -p release-dist
+          ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "release-dist/iPAGet_${VERSION}_macos-arm64.app.zip"
 
-      - name: Upload artifacts (DMG)
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-arm64-dmg
-          path: |
-            src-tauri/target/**/bundle/dmg/*.dmg
-            src-tauri/target/**/bundle/macos/*.dmg
-          if-no-files-found: error
-
-      - name: Upload artifacts (APP zip)
+      - name: Upload .app zip for the universal build
         uses: actions/upload-artifact@v4
         with:
           name: macos-arm64-app
-          path: |
-            macos-arm64.app.zip
+          path: release-dist/*
           if-no-files-found: error
 
   macos-x64:
@@ -325,31 +310,23 @@ jobs:
           cd go-service
           bash build.sh
 
-      - name: Build Tauri (dmg+app)
+      - name: Build Tauri (app)
         run: |
-          pnpm tauri build --bundles app,dmg --target x86_64-apple-darwin --ci
+          pnpm tauri build --bundles app --target x86_64-apple-darwin --ci
 
       - name: Zip .app for upload
         run: |
+          VERSION=$(node -p "require('./package.json').version")
           APP_DIR=$(find src-tauri/target -type d -path '*/bundle/macos/*.app' | head -n 1)
           if [ -z "$APP_DIR" ]; then echo 'no .app bundle produced' >&2; exit 1; fi
-          ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" macos-x64.app.zip
+          mkdir -p release-dist
+          ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "release-dist/iPAGet_${VERSION}_macos-x64.app.zip"
 
-      - name: Upload artifacts (DMG)
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-x64-dmg
-          path: |
-            src-tauri/target/**/bundle/dmg/*.dmg
-            src-tauri/target/**/bundle/macos/*.dmg
-          if-no-files-found: error
-
-      - name: Upload artifacts (APP zip)
+      - name: Upload .app zip for the universal build
         uses: actions/upload-artifact@v4
         with:
           name: macos-x64-app
-          path: |
-            macos-x64.app.zip
+          path: release-dist/*
           if-no-files-found: error
 
   macos-universal:
@@ -359,6 +336,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - name: Download macOS arm64 APP
         uses: actions/download-artifact@v4
@@ -382,6 +364,8 @@ jobs:
 
       - name: Create Universal .app and DMG
         run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p release-dist
           ARM_APP=$(ls -d work/arm64/*.app | head -n 1)
           X64_APP=$(ls -d work/x64/*.app | head -n 1)
           [ -z "$ARM_APP" -o -z "$X64_APP" ] && echo "Apps not found" && exit 1
@@ -400,20 +384,18 @@ jobs:
           # Free the per-architecture copies before hdiutil needs working space.
           rm -rf work/arm64 work/x64
           df -h /
-          if ! hdiutil create -volname iPAGet -srcfolder work/universal.app -ov -format UDZO universal-macOS-Universal.dmg; then
+          if ! hdiutil create -volname iPAGet -srcfolder work/universal.app -ov -format UDZO "release-dist/iPAGet_${VERSION}_macos-universal.dmg"; then
             echo 'disk image creation failed, publishing a zip of the universal app instead'
-            ditto -c -k --sequesterRsrc --keepParent work/universal.app universal-macOS-Universal.app.zip
+            ditto -c -k --sequesterRsrc --keepParent work/universal.app "release-dist/iPAGet_${VERSION}_macos-universal.app.zip"
           fi
           rm -rf work
           df -h /
 
-      - name: Upload Universal DMG
+      - name: Upload universal macOS build
         uses: actions/upload-artifact@v4
         with:
-          name: macos-universal-dmg
-          path: |
-            universal-macOS-Universal.dmg
-            universal-macOS-Universal.app.zip
+          name: release-macos-universal
+          path: release-dist/*
           if-no-files-found: error
 
   release:
@@ -424,21 +406,48 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The changelog walks the tag range, so the job needs the full history.
+          fetch-depth: 0
 
-      - name: Download all artifacts from this run
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: release-*
+          merge-multiple: true
           path: dist-release
 
       - name: List downloaded artifacts
         run: |
-          echo "Downloaded files:" && ls -R dist-release || true
+          echo "Downloaded files:" && ls -l dist-release
+
+      - name: Verify tag matches the app version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          APP_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$APP_VERSION" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json version $APP_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Generate release notes
+        run: |
+          node scripts/release-notes.mjs \
+            --tag "$GITHUB_REF_NAME" \
+            --assets dist-release \
+            --output release-body.md
 
       - name: Create GitHub Release (draft) and upload assets
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          generate_release_notes: true
+          body_path: release-body.md
+          fail_on_unmatched_files: true
           files: |
             dist-release/**
         env:
