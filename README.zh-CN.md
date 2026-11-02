@@ -88,7 +88,7 @@ Universal 包同时支持 Apple Silicon 和 Intel。
 | 查看应用信息和更新说明 | 选择历史版本下载 |
 | **设备应用** | **设备信息** |
 | ![设备](docs/images/zh/devices.png) | ![设备详情](docs/images/zh/device-details.png) |
-| 查看、安装和卸载应用 | 查看系统与硬件信息，设备标识已打码 |
+| 查看、安装和卸载应用 | 查看系统与硬件信息 |
 | **证书管理** | **IPA 安装** |
 | ![签名](docs/images/zh/signing.png) | ![安装 IPA](docs/images/zh/install-ipa.png) |
 | 管理开发者证书与自签证书 | 选择目标设备与签名选项 |
