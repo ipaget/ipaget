@@ -92,7 +92,7 @@ Installation notes:
 | View app information and release notes | Choose an older version to download |
 | **Installed apps** | **Device information** |
 | ![Devices](docs/images/en/devices.png) | ![Device details](docs/images/en/device-details.png) |
-| View, install and uninstall apps | View OS and hardware details; identifiers are redacted |
+| View, install and uninstall apps | View OS and hardware details |
 | **Certificates** | **IPA installation** |
 | ![Signing](docs/images/en/signing.png) | ![Install IPA](docs/images/en/install-ipa.png) |
 | Manage developer and self-signed certificates | Select a device and signing options |
