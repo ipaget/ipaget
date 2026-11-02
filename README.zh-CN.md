@@ -1,6 +1,6 @@
 # iPAGet
 
-**在电脑上管理 iPhone 与 iPad 的应用 —— 支持 Windows、macOS 和 Linux。**
+**不用 Mac，也能把 App Store 的应用下到电脑、再装回手机。**
 
 [![build](https://github.com/ipaget/ipaget/actions/workflows/build.yml/badge.svg)](https://github.com/ipaget/ipaget/actions/workflows/build.yml)
 [![release](https://img.shields.io/github/v/tag/ipaget/ipaget?sort=semver&label=release)](https://github.com/ipaget/ipaget/releases)
@@ -21,12 +21,13 @@
 
 [English README](README.md)
 
-iPhone 上装过的应用，可以同时属于你的电脑。iPAGet 把 App Store 里的应用下载成 IPA ——
-包括你指定的历史版本 —— 需要时装回设备，或换成你自己的证书重新签名。旧版本、备份、
-重装、自签安装，都在同一个窗口里完成。
+App Store 只给你最新版，也只让你装在手机上。想留一份旧版本、想看看包里到底是什么、
+想换掉应用图标、想用自己的证书再签一次，都得另找工具，而且大多数只跑在 macOS 上。
 
-Windows、macOS、Linux 都能用：不必为了 iOS 折腾一台 Mac，也不需要越狱。账号与密钥只
-留在本机，直接与 Apple 通信，不经过任何第三方服务。
+iPAGet 把它们收进一个桌面应用：按地区搜商店、下 IPA（包括你指定的历史版本）、连上手机
+装回去或卸载、改包、重新签名。Windows、macOS、Linux 都有安装包，不需要越狱。
+
+账号、两步验证、证书私钥都留在本机，请求由电脑直接发往 Apple，中间没有第三方服务器。
 
 ---
 
@@ -35,22 +36,22 @@ Windows、macOS、Linux 都能用：不必为了 iOS 折腾一台 Mac，也不�
 | | |
 | :-: | :-: |
 | ![App Store 搜索](docs/images/zh/app-store-search.png) | ![应用库](docs/images/zh/app-library.png) |
-| 切换商店地区搜索，查看榜单与应用详情 | 本地 IPA 库：批量安装、导入与删除 |
+| 换个商店地区就能搜，榜单、评分、体积都在列表里 | 下好的 IPA 放在这儿，能批量装，也能删 |
 | ![应用详情](docs/images/zh/app-detail.png) | ![版本历史](docs/images/zh/version-history.png) |
-| 应用详情与更新说明，直接下载或查看历史版本 | 完整版本历史，按需选择构建版本下载 |
+| 应用详情和更新说明，直接下当前版或翻历史 | 一个应用的全部构建版本，想装哪版选哪版 |
 | ![设备](docs/images/zh/devices.png) | ![设备详情](docs/images/zh/device-details.png) |
-| 已连接设备与已装应用，支持搜索、卸载与安装 IPA | 设备详情：序列号、基带、SIM 与硬件信息一屏看完 |
+| 手机连上就能看到已装应用，搜索、卸载、装 IPA 都在这 | 机型、基带、SIM、硬件一屏看完（图里设备标识已隐去） |
 | ![签名](docs/images/zh/signing.png) | ![安装 IPA](docs/images/zh/install-ipa.png) |
-| 管理 Apple 开发者证书与自签证书 | 安装前选择签名证书与目标设备 |
+| 开发者账号签发的证书，和自己签的证书都在这里 | 装之前先选证书和目标设备 |
 | ![编辑器](docs/images/zh/editor.png) | ![Plist 编辑器](docs/images/zh/plist-editor.png) |
-| 改显示名称、图标与能力开关，导出或直接重签 | 树形编辑 Info.plist，支持 XML 与二进制 |
+| 改名字、换图标、开关能力，然后导出或直接重签 | Info.plist 可以按树改，也可以直接写 XML |
 
 ---
 
 ## 下载
 
-在 [最新发布](https://github.com/ipaget/ipaget/releases) 中选择对应系统的文件。每个文件名都以目标
-平台开头，例如 `iPAGet_1.0.0_windows-x64.msi`，每个系统只需下载一个文件。
+去 [最新发布](https://github.com/ipaget/ipaget/releases) 挑对应系统的文件就行。文件名开头就是平台，
+例如 `iPAGet_1.0.0_windows-x64.msi`，每个系统下一个就够。
 
 | 系统 | 推荐 | 其他选择 |
 | --- | --- | --- |
@@ -59,7 +60,7 @@ Windows、macOS、Linux 都能用：不必为了 iOS 折腾一台 Mac，也不�
 | macOS（任意机型） | `iPAGet_<版本>_macos-universal.dmg` | `iPAGet_<版本>_macos-universal.app.zip`（仅在 DMG 缺失时使用） |
 | Linux 64 位 | `iPAGet_<版本>_linux-amd64.AppImage` | `iPAGet_<版本>_linux-amd64-portable` |
 
-安装提示：
+装的时候会遇到这些提示：
 
 - **macOS** 版本未做签名与公证。首次打开请 **右键 → 打开**，或执行
   `xattr -dr com.apple.quarantine /Applications/iPAGet.app`。
@@ -69,47 +70,46 @@ Windows、macOS、Linux 都能用：不必为了 iOS 折腾一台 Mac，也不�
 
 ---
 
-## 主要功能
+## 能做什么
 
 ### 浏览与下载
 
-- 切换商店地区搜索应用（美国、中国、日本、英国等），查看榜单、副标题、评分与分类。
-- 打开应用详情页，或直接进入该应用的 IPA 下载。
-- 查看完整的**版本历史**，下载指定构建版本 —— 包括**设备上当前安装的那一版**（按 App Store
-  的构建标识精确匹配）。
-- 同时保留多个 Apple 账号；登录状态会缓存，不必每次启动都重新验证。
-- 下载过程显示进度、已传输大小与速度，下载完成的 IPA 收进应用库统一管理。
+- 按商店地区搜应用（美国、中国、日本、英国……），看榜单、副标题、评分和分类，也可以从详情
+  页直接跳到下载。
+- 下载前能看到完整的**版本历史**，挑任意一个构建版本下回来，包括手机现在装着的那一版：按
+  App Store 的构建标识匹配，不靠版本号猜。
+- 同时登几个 Apple 账号，登录状态会缓存，不用每次启动都重新输一次验证码。
+- 下载时显示进度、已传大小和速度，下好的 IPA 进应用库统一管。
 
-### 设备管理
+### 设备
 
-- 查看已连接设备的机型、系统版本、存储、电池与连接信息。
-- 列出设备上已安装的应用，包括占用空间与共享的应用组数据。
-- 读取已安装应用中记录的 App Store 标识，据此下载完全相同的版本。
-- 安装 IPA、卸载应用，浏览应用的文件容器并上传或下载文件。
+- 连上设备就能看到机型、系统版本、存储、电池和连接方式。
+- 列出手机上已装的应用和它们占的空间，读得到应用里记录的 App Store 标识，据此下载同一个版本。
+- 装 IPA、卸应用、翻应用的文件目录，能往里传也能往外取。
 
-### IPA 处理
+### 改包
 
-- 安装前先看清包内容：包标识符、版本与构建号、最低系统要求、支持的设备、内嵌描述
-  文件、授权项、动态库与框架，以及可执行文件是否加密。
-- 以树形视图或原始 XML 编辑 `Info.plist` 等属性列表。
+- 装之前先看清楚：包标识、版本与构建号、最低系统版本、支持的设备、内嵌描述文件、授权项、
+  动态库与框架，以及可执行文件有没有加密。
+- `Info.plist` 这类属性列表，可以用树视图改，也可以直接写 XML。
 
 ### 签名
 
-- 管理 Apple 开发者账号中的证书（免费或付费账号均可）：生成签名请求并签发新证书，或导入
-  已有证书。
-- 用证书与描述文件对 IPA 签名或重签，以便安装到设备。
-- 凭据与密钥保存在系统钥匙串中，应用不会把数据存到任何服务器。
+- 用 Apple 开发者账号（免费账号也行）签发一张新证书，或者导入手上已有的证书。
+- 拿证书和描述文件给 IPA 签名、重签，签完直接装。
+- 私钥留在系统钥匙串里，应用不往任何服务器上传数据。
 
 ---
 
-## 使用前提
+## 用之前要知道的
 
-- 涉及 App Store 的功能需要 Apple 账号；纯设备功能（已装应用列表、文件浏览、安装已有 IPA）
-  不需要登录。
-- 需要一台已配对并在设备上信任过本机的 iOS 设备，用 USB 连接。
-- iOS 17 及以上设备的部分操作需要 usbmux 隧道，需管理员权限：Windows 上把 `wintun.dll`
-  放在应用目录，macOS 与 Linux 上以 `sudo` 运行。
-- 如需代理，在 **设置** 中填写。代理对后续请求立即生效，无需重启应用。
+- 跟 App Store 有关的功能都要登录 Apple 账号；只动本机的事（看已装应用、翻文件、装现成的
+  IPA）不用登录。
+- 只能下你账号拥有过的应用；免费应用也要先在商店里点过一次「获取」，否则会提示缺少授权。
+- 需要一台用 USB 连着、并且在手机上点过「信任」的 iOS 设备。
+- iOS 17 以上的部分操作要走 usbmux 隧道，得给管理员权限：Windows 把 `wintun.dll` 放进应用
+  目录，macOS 和 Linux 用 `sudo` 启动。
+- 走代理的话在 **设置** 里填，填完立刻生效，不用重启。
 
 ---
 

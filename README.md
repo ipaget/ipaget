@@ -1,6 +1,6 @@
 # iPAGet
 
-**Your iOS apps and devices, from your desktop — Windows, macOS and Linux.**
+**Get App Store apps onto your computer without a Mac — and put them back on your phone.**
 
 [![build](https://github.com/ipaget/ipaget/actions/workflows/build.yml/badge.svg)](https://github.com/ipaget/ipaget/actions/workflows/build.yml)
 [![release](https://img.shields.io/github/v/tag/ipaget/ipaget?sort=semver&label=release)](https://github.com/ipaget/ipaget/releases)
@@ -21,14 +21,18 @@
 
 [中文说明 / Chinese README](README.zh-CN.md)
 
-What is installed on your iPhone can also live on your computer. iPAGet downloads apps from the
-App Store as IPA files — including the exact historical version you ask for — installs them back
-onto a device, and re-signs them with your own certificate. Old versions, backups, reinstalls and
-self-signed installs all happen in one window.
+**Download App Store apps on your PC without a Mac, and install them back on your phone.**
 
-It runs on Windows, macOS and Linux: no Mac needed, and no jailbreak. Credentials stay on your own
-machine in your operating system keychain, talking to Apple directly, with no third-party service
-in between.
+The App Store hands you the latest build, on the phone, and that is it. Keeping an older version,
+looking inside an IPA, swapping the icon, signing it with your own certificate: each one needs a
+separate tool, and most of them only run on macOS.
+
+iPAGet folds those jobs into one desktop app. Search any storefront, download an IPA including the
+historical build you ask for, install or uninstall it on a connected iPhone, edit the package,
+re-sign it. There are builds for Windows, macOS and Linux, and no jailbreak is needed.
+
+Your Apple ID, two-factor codes and signing keys stay on this machine; requests go straight from
+your computer to Apple, with no third-party server in between.
 
 ---
 
@@ -37,23 +41,23 @@ in between.
 | | |
 | :-: | :-: |
 | ![App Store search](docs/images/en/app-store-search.png) | ![App library](docs/images/en/app-library.png) |
-| Search any App Store region, switch iPhone/iPad, browse charts and details | Your local IPA library: batch install, import and delete |
+| Search another storefront; charts, ratings and sizes in one list | Downloaded IPAs live here — install them in bulk, or delete them |
 | ![App detail](docs/images/en/app-detail.png) | ![Version history](docs/images/en/version-history.png) |
-| App details and release notes, download or open the version list | Full version history — pick the build you need |
+| App details and release notes, with the download right there | Every build of an app: install whichever one you need |
 | ![Devices](docs/images/en/devices.png) | ![Device details](docs/images/en/device-details.png) |
-| The connected device and its installed apps, with search and uninstall | Device details: serial, baseband, SIM and hardware in one view |
+| The phone's installed apps, with search, uninstall and install | Model, baseband, SIM and hardware on one screen (identifiers redacted) |
 | ![Signing](docs/images/en/signing.png) | ![Install IPA](docs/images/en/install-ipa.png) |
-| Apple developer certificates and self-signed certificates | Choose the certificate and target device before installing |
+| Certificates issued by your developer account, plus self-signed ones | Pick the certificate and the target device first |
 | ![IPA editor](docs/images/en/editor.png) | ![Plist editor](docs/images/en/plist-editor.png) |
-| Rename, re-icon and toggle capabilities, then export or re-sign | Edit Info.plist in a tree view, XML or binary |
+| Rename, re-icon, toggle capabilities, then export or re-sign | Edit Info.plist as a tree, or just write the XML |
 
 ---
 
 ## Download
 
-Grab the file for your system from the [latest release](https://github.com/ipaget/ipaget/releases).
-Every file name starts with the platform it targets, for example
-`iPAGet_1.0.0_windows-x64.msi`. Pick one file per system.
+Pick the file for your system from the [latest release](https://github.com/ipaget/ipaget/releases) —
+the platform is in the file name, for example `iPAGet_1.0.0_windows-x64.msi`. One file per system is
+all you need.
 
 | System | Recommended | Alternatives |
 | --- | --- | --- |
@@ -62,7 +66,7 @@ Every file name starts with the platform it targets, for example
 | macOS, any Mac | `iPAGet_<version>_macos-universal.dmg` | `iPAGet_<version>_macos-universal.app.zip` (only when the DMG is missing) |
 | Linux, 64-bit | `iPAGet_<version>_linux-amd64.AppImage` | `iPAGet_<version>_linux-amd64-portable` |
 
-Install notes:
+You will run into these warnings:
 
 - **macOS** builds are not signed or notarized. On first launch use **right-click → Open**, or run
   `xattr -dr com.apple.quarantine /Applications/iPAGet.app`.
@@ -72,51 +76,51 @@ Install notes:
 
 ---
 
-## What you can do
+## What it does
 
-### App Store
+### Store and downloads
 
-- Search any storefront (US, CN, JP, GB, and more) with top charts, subtitles, ratings and genres.
-- Open an app's full detail page, or jump straight to its IPA download.
-- Browse the complete **version history** and download the build you actually want — including the
-  build currently installed on a connected device, matched by its App Store build identifier.
-- Keep several Apple Accounts side by side; signed-in sessions are cached so you are not asked for a
-  verification code again on every launch.
-- Track downloads with progress, transferred size and speed, and keep the resulting IPAs in an
-  app library.
+- Search by storefront (US, CN, JP, GB and more) with top charts, subtitles, ratings and genres, or
+  jump straight from an app's page to its download.
+- See the full **version history** before downloading and pick any build you want, including the one
+  installed on your phone right now: matched by App Store build ID, not guessed from a version
+  string.
+- Stay signed in to several Apple Accounts at once; sessions are cached, so you are not typing a
+  verification code on every launch.
+- Downloads show progress, transferred size and speed, and land in the app library.
 
 ### Devices
 
-- See connected devices with model, iOS version, storage, battery and connection details.
-- List the installed apps, including their sizes and shared app-group data.
-- Read the App Store identifiers stored in an installed app, then download that exact version.
-- Install an IPA, uninstall apps, and browse an app's file container to pull or push files.
+- Plug in a device and see model, iOS version, storage, battery and how it is connected.
+- List the installed apps with their sizes, read the App Store ID each one carries, and download
+  that same build.
+- Install an IPA, uninstall an app, browse an app's container and move files in or out.
 
-### IPAs
+### Packages
 
-- Inspect a package before installing it: bundle identifier, version and build, minimum iOS version,
-  supported devices, embedded provisioning profile, entitlements, dylibs and frameworks, and
-  whether the binary is encrypted.
-- Edit `Info.plist` and other property lists in a tree view or as raw XML.
+- Inspect an IPA before installing: bundle ID, version and build, minimum iOS, supported devices,
+  embedded profile, entitlements, dylibs and frameworks, and whether the binary is encrypted.
+- Edit `Info.plist` and other property lists in a tree view, or as raw XML.
 
 ### Signing
 
-- Manage certificates from your Apple developer account — free or paid — including generating a
-  signing request and issuing a new certificate, or importing one you already have.
-- Sign or re-sign an IPA with a certificate and provisioning profile, ready to install on your device.
-- Credentials and keys stay in your operating system keychain; the app stores no server-side data.
+- Issue a certificate from your Apple developer account — a free account works — or import one you
+  already have.
+- Sign or re-sign an IPA with a certificate and profile, ready to install.
+- Keys live in the OS keychain; the app uploads nothing to a server of its own.
 
 ---
 
-## Requirements
+## Before you start
 
-- An Apple Account for anything that touches the App Store. Device-only features (installed app list,
-  file browsing, installing an IPA you already have) do not need one.
-- A trusted, paired iOS device connected over USB. Accept **Trust This Computer** on the device.
-- iOS 17 and newer devices need an usbmux tunnel for some operations, which requires administrator
-  rights: on Windows copy `wintun.dll` next to the app, on macOS and Linux run the app with `sudo`.
-- An optional HTTP proxy can be set in **Settings**; it applies to App Store requests without
-  restarting the app.
+- Anything that talks to the App Store needs an Apple Account. Local-only work (seeing installed
+  apps, browsing files, installing an IPA you already have) does not.
+- You can only download apps your account holds a licence for. Even free apps have to have been
+  "acquired" once in the store, otherwise the download fails on licensing.
+- You need an iOS device on USB that has been trusted on the phone.
+- Some operations on iOS 17 and newer go through an usbmux tunnel and need administrator rights: put
+  `wintun.dll` next to the app on Windows, start it with `sudo` on macOS and Linux.
+- If you are behind a proxy, set it in **Settings**. It takes effect immediately, no restart.
 
 ---
 
