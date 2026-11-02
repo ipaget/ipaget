@@ -26,7 +26,7 @@ interface DeviceDetailsDialogProps {
 }
 
 export default function DeviceDetailsDialog({ device, connectedDeviceUdids, onClose, onRefresh }: DeviceDetailsDialogProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { showToast } = useToastStore();
   const [isOpen, setIsOpen] = useState(false);
   const [currentDevice, setCurrentDevice] = useState<DeviceInfo | null>(null);
@@ -260,102 +260,22 @@ export default function DeviceDetailsDialog({ device, connectedDeviceUdids, onCl
   const getSalesRegionText = (regionInfo: string | undefined | null) => {
     if (!regionInfo) return "-";
     const code = regionInfo.split("/")[0].toUpperCase();
-    const map: Record<string, string> = {
-      A: "Canada",
-      AB: "Egypt, Jordan, Saudi Arabia, United Arab Emirates",
-      AE: "Bahrain, Kuwait, Qatar, Saudi Arabia, United Arab Emirates",
-      AH: "Bahrain, Kuwait",
-      AM: "United States (Assembled in Vietnam)",
-      B: "Ireland, UK, also used for some replacement units",
-      BR: "Brazil (Assembled in Brazil)",
-      BZ: "Brazil (Assembled in China)",
-      C: "Canada",
-      CL: "Canada",
-      CH: "中国大陆",
-      CN: "Slovakia",
-      CZ: "Czech Republic",
-      D: "Germany",
-      DN: "Austria, Germany, Netherlands",
-      E: "Mexico",
-      EE: "Estonia",
-      ET: "Estonia",
-      F: "France",
-      FB: "France, Luxembourg",
-      FD: "Austria, Liechtenstein, Switzerland",
-      FS: "Finland",
-      GR: "Greece",
-      HN: "India",
-      HB: "Israel",
-      HU: "Ukraine",
-      IP: "Italy",
-      J: "Japan",
-      KH: "China, South Korea",
-      KN: "Denmark, Norway",
-      KS: "Finland, Sweden",
-      LA: "Colombia, Ecuador, El Salvador, Guatemala, Honduras, Peru",
-      LE: "Argentina",
-      LL: "USA, Canada, also used for some replacement units",
-      LP: "Poland",
-      LT: "Lithuania",
-      LV: "Latvia",
-      LW: "USA (Apple Watches sold after January 18th, 2024 without Blood Oxygen functionality)",
-      LZ: "Chile, Paraguay, Uruguay",
-      MG: "Hungary",
-      MO: "Macau, Hong Kong",
-      MY: "Malaysia",
-      NF: "Belgium, France, Luxembourg",
-      PK: "Finland, Poland",
-      PL: "Poland",
-      PM: "Poland",
-      PO: "Portugal",
-      PP: "Philippines",
-      QL: "Italy, Spain, Portugal",
-      QN: "Denmark, Norway, Sweden, Iceland",
-      RK: "Kazakhstan",
-      RM: "Russia, Kazakhstan",
-      RO: "Romania",
-      RP: "Russia",
-      RR: "Russia",
-      RS: "Russia",
-      RU: "Russia",
-      SA: "Vietnam (used mostly on iPad and Mac)",
-      SE: "Serbia",
-      SL: "Slovakia",
-      SO: "South Africa",
-      SU: "Ukraine",
-      T: "Italy",
-      TA: "Taiwan",
-      TH: "Thailand",
-      TU: "Turkey",
-      TY: "Italy",
-      UA: "Ukraine",
-      VC: "Canada",
-      VN: "Vietnam",
-      X: "Australia, New Zealand",
-      Y: "Spain",
-      ZA: "Singapore",
-      ZD: "Germany, Belgium, Luxembourg, Netherlands, Austria, France, Switzerland, Monaco",
-      ZP: "Hong Kong, Macau",
-    };
-    const description = map[code];
-    if (!description) {
-      return regionInfo;
-    }
-    return description;
+    const key = `deviceDetails.salesRegions.${code}`;
+    const translated = t(key);
+    return translated === key ? regionInfo : translated;
   };
 
-  // Translate carrier bundle ID to friendly name
+  const carrierKeys: Record<string, string> = {
+    CBN_cn: "cbn",
+    ChinaTelecom_USIM_cn: "chinaTelecom",
+    CMCC_cn: "chinaMobile",
+    Unicom_cn: "chinaUnicom",
+  };
+
+  // Carrier bundle IDs map to a stable translation key, unknown carriers keep the raw ID.
   const translateCarrier = (bundleId: string): string => {
-    const carriers: Record<string, string> = {
-      'CBN_cn': '中国广电',
-      'ChinaTelecom_USIM_cn': '中国电信',
-      'CMCC_cn': '中国移动',
-      'Unicom_cn': '中国联通',
-    };
-    
-    // Remove .ipcc suffix if present
-    const cleanId = bundleId.replace('.ipcc', '');
-    return carriers[cleanId] || bundleId;
+    const key = carrierKeys[bundleId.replace(".ipcc", "")];
+    return key ? t(`deviceDetails.carriers.${key}`) : bundleId;
   };
 
   const hardwareDetails = currentDevice.hardware_details;
@@ -521,11 +441,15 @@ export default function DeviceDetailsDialog({ device, connectedDeviceUdids, onCl
     const date = new Date(`${value}T00:00:00`);
     return Number.isNaN(date.getTime())
       ? value
-      : new Intl.DateTimeFormat(undefined, { year: "numeric", month: "long", day: "numeric" }).format(date);
+      : new Intl.DateTimeFormat(i18n.language, { year: "numeric", month: "long", day: "numeric" }).format(date);
   };
   const formatCpuCores = (value: unknown): string => {
-    const text = formatDetailValue(value);
-    return text === "-" ? "-" : `${text}核`;
+    if (value === null || value === undefined || value === "") return "-";
+    const count = Number(value);
+    if (Number.isFinite(count) && count > 0) {
+      return t("deviceDetails.cpuCoreCountValue", { count });
+    }
+    return formatDetailValue(value);
   };
   const formatCpuFrequency = (value: unknown): string => {
     if (value === null || value === undefined || value === "") return "-";
@@ -569,90 +493,90 @@ export default function DeviceDetailsDialog({ device, connectedDeviceUdids, onCl
     currentDevice.enclosure_color
   );
   const simType = currentDevice.sim1_info && currentDevice.sim2_info
-    ? "双卡"
+    ? t("deviceDetails.dualSim")
     : currentDevice.sim1_info || currentDevice.sim2_info
-      ? "单卡"
+      ? t("deviceDetails.singleSim")
       : "-";
 
   const moreDetailSections = [
     {
       rows: [
-        { label: "设备名称", value: formatDetailValue(currentDevice.name), copyable: true },
-        { label: "容量颜色", value: [getStorageCapacityLabel(), colorName].filter(Boolean).join(" ") || "-" },
-        { label: "上市日期", value: formatReleaseDate(getDeviceReleaseDate(currentDevice.product_type) || (rawDetailValue("PurchaseDate") === "-" ? null : rawDetailValue("PurchaseDate"))) },
-        { label: "设备型号", value: modelName, copyable: true },
-        { label: "激活状态", value: getActivationStateText(currentDevice.activation_state) },
-        { label: "生产日期", value: formatDetailValue(currentDevice.manufacture_date) },
-        { label: "序列号", value: formatDetailValue(currentDevice.serial_number), copyable: true },
-        { label: "越狱状态", value: getJailbreakStatusText(currentDevice.is_jailbroken) },
-        { label: "销售类型", value: salesTypeValue },
-        { label: "主板序列号", value: formatDetailValue(hardwareDetails?.mlb_serial_number), copyable: true },
-        { label: "产品类型", value: `${formatDetailValue(currentDevice.product_type)} (${formatDetailValue(currentDevice.regulatory_model || currentDevice.product_name)})` },
-        { label: "销售型号", value: formatDetailValue(currentDevice.sales_model) },
+        { label: t("deviceDetails.deviceName"), value: formatDetailValue(currentDevice.name), copyable: true },
+        { label: t("deviceDetails.capacityAndColor"), value: [getStorageCapacityLabel(), colorName].filter(Boolean).join(" ") || "-" },
+        { label: t("deviceDetails.releaseDate"), value: formatReleaseDate(getDeviceReleaseDate(currentDevice.product_type) || (rawDetailValue("PurchaseDate") === "-" ? null : rawDetailValue("PurchaseDate"))) },
+        { label: t("deviceDetails.deviceModel"), value: modelName, copyable: true },
+        { label: t("deviceDetails.activationState"), value: getActivationStateText(currentDevice.activation_state) },
+        { label: t("deviceDetails.manufactureDate"), value: formatDetailValue(currentDevice.manufacture_date) },
+        { label: t("deviceDetails.serialNumber"), value: formatDetailValue(currentDevice.serial_number), copyable: true },
+        { label: t("deviceDetails.jailbreakStatus"), value: getJailbreakStatusText(currentDevice.is_jailbroken) },
+        { label: t("deviceDetails.salesTypeLabel"), value: salesTypeValue },
+        { label: t("deviceDetails.mlbSerialNumber"), value: formatDetailValue(hardwareDetails?.mlb_serial_number), copyable: true },
+        { label: t("deviceDetails.productType"), value: `${formatDetailValue(currentDevice.product_type)} (${formatDetailValue(currentDevice.regulatory_model || currentDevice.product_name)})` },
+        { label: t("deviceDetails.salesModel"), value: formatDetailValue(currentDevice.sales_model) },
         { label: "ECID", value: formatDetailValue(currentDevice.ecid || detailData.UniqueChipID), copyable: true },
-        { label: "固件版本", value: `${formatDetailValue(currentDevice.version)} (${formatDetailValue(currentDevice.build_version)})` },
-        { label: "销售地区", value: getSalesRegionText(currentDevice.region_info) },
+        { label: t("deviceDetails.firmwareVersion"), value: `${formatDetailValue(currentDevice.version)} (${formatDetailValue(currentDevice.build_version)})` },
+        { label: t("deviceDetails.salesRegion"), value: getSalesRegionText(currentDevice.region_info) },
         { label: "UDID", value: formatDetailValue(currentDevice.udid), copyable: true },
       ],
     },
     {
       rows: [
-        { label: "时区", value: formatDetailValue(currentDevice.time_zone) },
-        { label: "地区", value: rawDetailValue("Locale") },
-        { label: "24小时制", value: rawDetailValue("Uses24HourClock") },
-        { label: "充电次数", value: formatDetailValue(currentDevice.battery_cycle_count > 0 ? `${currentDevice.battery_cycle_count}次` : "-") },
-        { label: "剩余电量", value: formatDetailValue(currentDevice.battery_level > 0 ? `${currentDevice.battery_level}%` : "-") },
-        { label: "电池寿命", value: formatDetailValue(currentDevice.battery_health > 0 ? `${currentDevice.battery_health}%` : "-") },
+        { label: t("deviceDetails.timeZone"), value: formatDetailValue(currentDevice.time_zone) },
+        { label: t("deviceDetails.locale"), value: rawDetailValue("Locale") },
+        { label: t("deviceDetails.uses24HourClock"), value: rawDetailValue("Uses24HourClock") },
+        { label: t("deviceDetails.chargeCycles"), value: formatDetailValue(currentDevice.battery_cycle_count > 0 ? t("deviceDetails.batteryCycleCountValue", { count: currentDevice.battery_cycle_count }) : "-") },
+        { label: t("deviceDetails.batteryLevel"), value: formatDetailValue(currentDevice.battery_level > 0 ? `${currentDevice.battery_level}%` : "-") },
+        { label: t("deviceDetails.batteryHealth"), value: formatDetailValue(currentDevice.battery_health > 0 ? `${currentDevice.battery_health}%` : "-") },
       ],
     },
     {
       rows: [
-        { label: "卡槽类型", value: simType },
-        { label: "IMEI 1", value: formatDetailValue(currentDevice.imei), copyable: true },
-        { label: "SIM卡1信息", value: formatDetailValue(currentDevice.sim1_info ? translateCarrier(currentDevice.sim1_info) : "-") },
-        { label: "有无卡托", value: currentDevice.sim_tray_status ? t("common.yes") : "-" },
-        { label: "IMEI 2", value: formatDetailValue(currentDevice.imei2), copyable: true },
-        { label: "SIM卡2信息", value: formatDetailValue(currentDevice.sim2_info ? translateCarrier(currentDevice.sim2_info) : "-") },
-        { label: "基带版本", value: formatDetailValue(hardwareDetails?.baseband_version || detailData.BasebandVersion), copyable: true },
-        { label: "Wi-Fi地址", value: formatDetailValue(currentDevice.wifi_address), copyable: true },
-        { label: "SIM卡状态", value: formatDetailValue(currentDevice.sim_status) },
-        { label: "基带激活版本", value: rawDetailValue("BasebandActivationTicketVersion") },
-        { label: "蓝牙地址", value: formatDetailValue(currentDevice.bluetooth_address), copyable: true },
-        { label: "SIM卡托状态", value: formatDetailValue(currentDevice.sim_tray_status) },
-        { label: "基带状态", value: rawDetailValue("BasebandStatus") },
-        { label: "蜂窝地址", value: formatDetailValue(currentDevice.ethernet_address), copyable: true },
-        { label: "通话功能", value: rawDetailValue("TelephonyCapability") },
-        { label: "基带序列号", value: formatDetailValue(hardwareDetails?.baseband_serial_number), copyable: true },
+        { label: t("deviceDetails.simSlotType"), value: simType },
+        { label: t("deviceDetails.imei1"), value: formatDetailValue(currentDevice.imei), copyable: true },
+        { label: t("deviceDetails.sim1Info"), value: formatDetailValue(currentDevice.sim1_info ? translateCarrier(currentDevice.sim1_info) : "-") },
+        { label: t("deviceDetails.simTrayPresence"), value: currentDevice.sim_tray_status ? t("common.yes") : "-" },
+        { label: t("deviceDetails.imei2"), value: formatDetailValue(currentDevice.imei2), copyable: true },
+        { label: t("deviceDetails.sim2Info"), value: formatDetailValue(currentDevice.sim2_info ? translateCarrier(currentDevice.sim2_info) : "-") },
+        { label: t("deviceDetails.basebandVersion"), value: formatDetailValue(hardwareDetails?.baseband_version || detailData.BasebandVersion), copyable: true },
+        { label: t("deviceDetails.wifiAddress"), value: formatDetailValue(currentDevice.wifi_address), copyable: true },
+        { label: t("deviceDetails.simStatus"), value: formatDetailValue(currentDevice.sim_status) },
+        { label: t("deviceDetails.basebandActivationVersion"), value: rawDetailValue("BasebandActivationTicketVersion") },
+        { label: t("deviceDetails.bluetoothAddress"), value: formatDetailValue(currentDevice.bluetooth_address), copyable: true },
+        { label: t("deviceDetails.simTrayStatus"), value: formatDetailValue(currentDevice.sim_tray_status) },
+        { label: t("deviceDetails.basebandStatus"), value: rawDetailValue("BasebandStatus") },
+        { label: t("deviceDetails.ethernetAddress"), value: formatDetailValue(currentDevice.ethernet_address), copyable: true },
+        { label: t("deviceDetails.telephonyCapability"), value: rawDetailValue("TelephonyCapability") },
+        { label: t("deviceDetails.basebandSerialNumber"), value: formatDetailValue(hardwareDetails?.baseband_serial_number), copyable: true },
         { label: "IMSI", value: formatDetailValue(currentDevice.imsi), copyable: true },
-        { label: "协议版本", value: rawDetailValue("ProtocolVersion") },
+        { label: t("deviceDetails.protocolVersion"), value: rawDetailValue("ProtocolVersion") },
       ],
     },
     {
       rows: [
-        { label: "CPU类型", value: socName },
-        { label: "Wi-Fi模块", value: formatDetailValue(hardwareDetails?.wifi_chipset || detailData.WiFiModule || detailData.WiFiChipset) },
-        { label: "屏幕大小", value: screenSizeValue },
-        { label: "CPU核心", value: formatCpuCores(cpuCoresValue) },
-        { label: "Wi-Fi序号", value: formatDetailValue(hardwareDetails?.wifi_module_serial || detailData.WiFiModuleSerial || detailData.WiFiSerialNumber), copyable: true },
-        { label: "屏幕分辨率", value: screenResolutionValue },
-        { label: "CPU频率", value: formatCpuFrequency(cpuFrequencyValue) },
-        { label: "无线技术类型", value: currentDevice.wireless_technology ? formatDetailValue(currentDevice.wireless_technology) : rawDetailValueOr("ActiveWirelessTechnology", "kCTWirelessTechnology", "WirelessTechnology", "WirelessTechnologyType", "BasebandRegionSKURadioTechnology", "TelephonyMaximumGeneration") },
-        { label: "硬盘类型", value: diskTypeValue },
-        { label: "协处理器", value: coprocessorValue },
-        { label: "硬件版本", value: formatDetailValue(hardwareDetails?.hardware_platform) },
-        { label: "分区类型", value: formatDetailValue(hardwareDetails?.partition_type) },
+        { label: t("deviceDetails.cpuType"), value: socName },
+        { label: t("deviceDetails.wifiModule"), value: formatDetailValue(hardwareDetails?.wifi_chipset || detailData.WiFiModule || detailData.WiFiChipset) },
+        { label: t("deviceDetails.screenSize"), value: screenSizeValue },
+        { label: t("deviceDetails.cpuCores"), value: formatCpuCores(cpuCoresValue) },
+        { label: t("deviceDetails.wifiSerialNumber"), value: formatDetailValue(hardwareDetails?.wifi_module_serial || detailData.WiFiModuleSerial || detailData.WiFiSerialNumber), copyable: true },
+        { label: t("deviceDetails.screenResolution"), value: screenResolutionValue },
+        { label: t("deviceDetails.cpuFrequency"), value: formatCpuFrequency(cpuFrequencyValue) },
+        { label: t("deviceDetails.wirelessTechnology"), value: currentDevice.wireless_technology ? formatDetailValue(currentDevice.wireless_technology) : rawDetailValueOr("ActiveWirelessTechnology", "kCTWirelessTechnology", "WirelessTechnology", "WirelessTechnologyType", "BasebandRegionSKURadioTechnology", "TelephonyMaximumGeneration") },
+        { label: t("deviceDetails.storageDiskType"), value: diskTypeValue },
+        { label: t("deviceDetails.coprocessorLabel"), value: coprocessorValue },
+        { label: t("deviceDetails.hardwareVersion"), value: formatDetailValue(hardwareDetails?.hardware_platform) },
+        { label: t("deviceDetails.partitionType"), value: formatDetailValue(hardwareDetails?.partition_type) },
       ],
     },
     {
       rows: [
-        { label: "距离传感器", value: formatHardwareSerialValue(findDetailValue("sensor:rosaline-serial-num", "sensor:proximitySensor", "sensor:ProximitySensor", "sensor:ProximitySensorSerialNumber", "rosaline-serial-num", "RosalineSerialNumber", "ProximitySensorSerialNumber", "ProximitySensorSerial", "Rosaline") ?? hardwareDetails?.proximity_sensor) },
-        { label: "环境光", value: formatHardwareSerialValue(findDetailValue("sensor:ambientLightSensor", "sensor:AmbientLightSensor", "sensor:AmbientLightSensorSerialNumber", "AmbientLightSensorSerialNumber", "ambient-light-sensor-serial-num") ?? hardwareDetails?.ambient_light_sensor) },
-        { label: "点阵", value: formatHardwareSerialValue(findDetailValue("camera:FrontIRStructuredLightProjectorSerialNumString", "sensor:dotProjector", "sensor:DotProjector", "sensor:DotMatrix", "sensor:DotProjectorSerialNumber", "FrontFacingIRStructuredLightProjectorModuleSerialNumber", "FrontIRStructuredLightProjectorSerialNumString")) },
-        { label: "红外摄像头", value: formatHardwareSerialValue(findDetailValue("camera:FrontIRCameraModuleSerialNumString", "sensor:infraredCamera", "sensor:InfraredCameraSerialNumber", "sensor:InfraredCameraModuleSerial", "FrontFacingIRCameraModuleSerialNumber", "front-facing-ir-camera-module-serial-number", "FrontCameraSerialNumber", "FrontIRCameraModuleSerialNumString")) },
-        { label: "电池序列号", value: formatHardwareSerialValue(findDetailValue("sensor:battery", "BatterySerialNumber", "battery-serial-number") ?? (hardwareDetails?.battery_serial || detailData.BatterySerialNumber)), copyable: true },
-        { label: "震动器编码", value: rawDetailValueOr("camera:JasperSNUM", "JasperSNUM", "VibrationMotorCode", "TapticEngineCode") },
-        { label: "盖板码", value: formatHardwareSerialValue(findDetailValue("sensor:coverGlass", "CoverglassSerialNumber", "CoverGlassSerialNumber", "coverglass-serial-number") ?? (hardwareDetails?.cover_glass_serial || detailData.CoverGlassSerialNumber)), copyable: true, span: 3 },
-        { label: "屏幕序列号", value: formatHardwareSerialValue(findDetailValue("sensor:screen", "DisplaySerialNumber", "ScreenSerialNumber", "PanelSerialNumber", "RawPanelSerialNumber", "raw-panel-serial-number") ), span: 3, truncate: true },
+        { label: t("deviceDetails.proximitySensor"), value: formatHardwareSerialValue(findDetailValue("sensor:rosaline-serial-num", "sensor:proximitySensor", "sensor:ProximitySensor", "sensor:ProximitySensorSerialNumber", "rosaline-serial-num", "RosalineSerialNumber", "ProximitySensorSerialNumber", "ProximitySensorSerial", "Rosaline") ?? hardwareDetails?.proximity_sensor) },
+        { label: t("deviceDetails.ambientLightSensor"), value: formatHardwareSerialValue(findDetailValue("sensor:ambientLightSensor", "sensor:AmbientLightSensor", "sensor:AmbientLightSensorSerialNumber", "AmbientLightSensorSerialNumber", "ambient-light-sensor-serial-num") ?? hardwareDetails?.ambient_light_sensor) },
+        { label: t("deviceDetails.dotProjector"), value: formatHardwareSerialValue(findDetailValue("camera:FrontIRStructuredLightProjectorSerialNumString", "sensor:dotProjector", "sensor:DotProjector", "sensor:DotMatrix", "sensor:DotProjectorSerialNumber", "FrontFacingIRStructuredLightProjectorModuleSerialNumber", "FrontIRStructuredLightProjectorSerialNumString")) },
+        { label: t("deviceDetails.infraredCamera"), value: formatHardwareSerialValue(findDetailValue("camera:FrontIRCameraModuleSerialNumString", "sensor:infraredCamera", "sensor:InfraredCameraSerialNumber", "sensor:InfraredCameraModuleSerial", "FrontFacingIRCameraModuleSerialNumber", "front-facing-ir-camera-module-serial-number", "FrontCameraSerialNumber", "FrontIRCameraModuleSerialNumString")) },
+        { label: t("deviceDetails.batterySerialNumber"), value: formatHardwareSerialValue(findDetailValue("sensor:battery", "BatterySerialNumber", "battery-serial-number") ?? (hardwareDetails?.battery_serial || detailData.BatterySerialNumber)), copyable: true },
+        { label: t("deviceDetails.vibrationMotorCode"), value: rawDetailValueOr("camera:JasperSNUM", "JasperSNUM", "VibrationMotorCode", "TapticEngineCode") },
+        { label: t("deviceDetails.coverGlassSerialNumber"), value: formatHardwareSerialValue(findDetailValue("sensor:coverGlass", "CoverglassSerialNumber", "CoverGlassSerialNumber", "coverglass-serial-number") ?? (hardwareDetails?.cover_glass_serial || detailData.CoverGlassSerialNumber)), copyable: true, span: 3 },
+        { label: t("deviceDetails.screenSerialNumber"), value: formatHardwareSerialValue(findDetailValue("sensor:screen", "DisplaySerialNumber", "ScreenSerialNumber", "PanelSerialNumber", "RawPanelSerialNumber", "raw-panel-serial-number") ), span: 3, truncate: true },
       ],
     },
   ];
@@ -730,7 +654,7 @@ export default function DeviceDetailsDialog({ device, connectedDeviceUdids, onCl
                 <Dialog.Panel className="flex h-[min(calc(100vh-16px),760px)] w-full max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-xl bg-white text-left shadow-xl">
                   <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
                     <Dialog.Title className="text-lg font-semibold text-gray-900">
-                      {t("deviceDetails.title")}
+                      {t("deviceDetails.moreDetails")}
                     </Dialog.Title>
                     <button
                       type="button"
@@ -861,7 +785,7 @@ export default function DeviceDetailsDialog({ device, connectedDeviceUdids, onCl
                       <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-3">
                         <Button3D type="button" variant="secondary" size="sm" onClick={handleShowMoreDetails}>
                           <Info size={14} />
-                          {t("deviceDetails.title")}
+                          {t("deviceDetails.moreDetails")}
                         </Button3D>
                         <Button3D type="button" variant="accent" size="sm" onClick={handleOpenRawData}>
                           <Activity size={14} />
